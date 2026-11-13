@@ -148,10 +148,13 @@ Long-press BACK belongs to the watch's operating system, so it does not exit the
 |---|---|
 | **Tap a row** (mode name or a setting) | Focus that row (same as cycling with BACK) |
 | **Tap and hold a row** | Focus that row |
-| **Swipe up** | Same as DOWN: next mode / next value |
-| **Swipe down** | Same as UP: previous mode / previous value |
+| **Swipe up** | Same as DOWN: next mode / next value (not while recording: highlights are buttons only) |
+| **Swipe down** | Same as UP: previous mode / previous value (not while recording) |
 | **Tap the focused Power off / Exit row again** | Run it (same as START) |
 | **Tap anywhere else** | Same as START — **shoots** (or stops a recording). On the Settings page it runs the focused Power off / Exit row and never shoots. |
+
+Against accidental touches (a palm on the screen while pressing a button): taps are ignored for 1 s
+after any button press, and a tap on empty space does not act as START within 2 s of the last START.
 
 Touch can be turned off in the watch's own settings; the buttons do everything.
 
@@ -200,11 +203,12 @@ These come from the camera or from Connect IQ, not from missing work. Details an
 * **GPS overlay is for the older (pre-X5) cameras only.** It sends the watch's position with the
   legacy photo command. The X5 path does not use it, so with an X5 the menu item is hidden and the
   watch's GPS stays off.
-* **Changes made on the camera itself:** the mode is followed; for a setting the camera reports
+* **Changes made on the camera itself:** the mode is followed, and so is a video recording started
+  or stopped with the camera's own button (timer exact); for a setting the camera reports
   only *which* one changed (the value is cut off), so that row goes back to `–` until you set it
   from the watch. A setting sent while the camera's own menu is open is ignored.
 * **Joining a running recording:** if the app starts while the camera already records, the timer
-  shows a leading `+` (`+00:12`): time since the watch joined, not the length of the recording,
+  is labelled *joined*: it shows the time since the watch joined, not the length of the recording,
   which the camera does not send in a form the watch can read.
 * **One Bluetooth client at a time.** Close the Insta360 phone app (or anything else connected to
   the camera) first.
