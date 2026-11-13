@@ -10,9 +10,14 @@ start and stop recordings, take photos, switch modes and change shooting setting
 
 ## Why this fork
 
-The official Insta360 Connect IQ app crashes at "Searching for device" on a Descent Mk3i with an X5,
-and the original community widget in this repository predates the X5's newer protocol. This fork adds
-an X5 widget, built on the original widget's Bluetooth code, tested on the real watch and camera.
+**Official Insta360 Garmin app stuck on "Searching for device", then closes?** On a Garmin Descent
+Mk3i with an Insta360 X5, the official Insta360 Connect IQ app shows "Searching for device" and exits,
+and it has done so for a long time across firmware updates, camera changes and watch resets; store
+reviews report the same on Epix and Fenix watches. The original community widget in this repository
+("Insta360 Remote") predates the X5's newer Bluetooth protocol, so it cannot drive the X5 either.
+
+This fork adds an X5 widget, built on the original widget's Bluetooth code and tested on the real watch
+and camera: it connects, starts and stops recording, takes photos and changes modes and settings.
 
 It is not in the Connect IQ store: you install it yourself with the installer below. No Garmin account
 is needed.
