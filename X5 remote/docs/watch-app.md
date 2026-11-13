@@ -13,7 +13,7 @@ work). It is a fork of ArsFabula's Insta360 Remote (MPL-2.0) with a new UI and X
 | Model: from the advertised name of the camera being connected. Names of the older cameras the upstream app supports (ONE, X3, X4, GO, Ace) get the legacy protocol; any other name gets the X5 protocol, since the X5 sends no notification before its session start (§2.2) and no identity reply fits in 20 bytes | §2.2, §10 | `BLEBarrel.isX5`, `LEGACY_MODELS`, `adoptName` |
 | Mode list and switching | §3.1 | `RemoteDelegate.mc` `modeListX5`, `sendCurrentMode`; `BLEBarrel.setSubModeX5` |
 | Follow mode changes made on the camera | §3.2 `0x2053` | `BLEBarrel.onFrameX5` |
-| Sync on connect: adopt a running capture, otherwise push the watch's mode. The timer of an adopted capture is labelled *joined* (a text-font label under the mode name; the device number fonts have no `+`): it counts from when the watch joined (a reconnect during a recording the watch already showed keeps its timer), because the camera's elapsed time cannot be read on a watch (below) | §4.1 | `BLEBarrel.queryCaptureX5`, `syncOnConnect`, `recAdopted`, `timerText` |
+| Sync on connect: adopt a running capture, otherwise push the watch's mode. An adopted capture shows **REC** and an amber *joined* label, no digits (a reconnect during a recording the watch already showed keeps its exact timer), because the camera's elapsed time cannot be read on a watch (below) | §4.1 | `BLEBarrel.queryCaptureX5`, `syncOnConnect`, `recAdopted`, `timerText` |
 | Video, photo, burst, interval, starlapse | §4 | `RemoteDelegate.onSelect`; `BLEBarrel.shutterX5`, `lapseX5` |
 | Every action waits for the camera (state poll every 2 s, 60 s safety net) | §4.1 | `RemoteView.onTick` |
 | Charging / on-battery, low-battery alarm, SD card state (no card / full / error) on the top arcs, with toasts. No battery level or card space on the X5 (see below) | §6 `GET_STORAGE`, §8 `0x2003` `0x2004` `0x2006` | `BLEBarrel.onFrameX5`, `queryStorageX5`; `RemoteView.drawWidgets` |
@@ -24,7 +24,7 @@ work). It is a fork of ArsFabula's Insta360 Remote (MPL-2.0) with a new UI and X
 | Per-mode settings: resolution / frame rate, EV (stops at ±4.0), lens, self-timer, photo size, interval, burst, loop length, TimeShift speed, Starlapse duration | §3.3, §5, §5.1 | `Settings.rows`, `Settings.frames`; `RemoteDelegate.stepFocused` |
 | Settings changed on the camera: the `0x2065` push names the option but is cut before the value, so every row carrying that option goes back to `–` until it is set from the watch. Pushes within 3 s of the watch's own write or mode change are its echoes and skipped; a cut push within 1.5 s of a `0x2053` (either order) belongs to that mode change and is skipped too | §5 | `BLEBarrel.onSettingPushX5`, `Settings.cameraChanged` |
 | Highlight / *Track That* while recording (UP / DOWN buttons only; a swipe does nothing while recording) | §4 `0x3C` | `RemoteDelegate.onPreviousPage`, `onNextPage`, `fromKey` |
-| Follow a video recording started / stopped on the camera (`0x2010`, `0x0F`): start taken only from the stopped state and not within 2 s of the watch's own stop (the camera still pushes `state=1`, then 0, after a stop); photo states and the file-writing state 24 never start the timer | §4.1, §8 | `BLEBarrel.captureState` |
+| Follow a video recording started / stopped on the camera (`0x2010`, `0x0F`): start taken only from the stopped state, never while stopping (during the watch's own stop the camera pushes `state=1` before `state=0`); once the stop is confirmed, a later recording state is a real start; photo states and the file-writing state 24 never start the timer | §4.1, §8 | `BLEBarrel.captureState` |
 | Accidental touches: taps ignored for 1 s after any button press; a tap on empty space does not START within 2 s of the last START | — | `RemoteDelegate.tapBlocked`, `onTap`, `onTapTimeout` |
 | Touch: tap a row = focus it, tap elsewhere = START | — | `RemoteDelegate.onSelect`, `onTap`, `focusRowAt` |
 | GPS overlay (hold-UP menu): older cameras only; hidden and GPS off with an X5 | — | `RemoteDelegate.onMenu`, `Main.gpsSync`, `photoWithGps` |
@@ -55,8 +55,7 @@ USB / BAT / LOW and the card state. The settings can still be **written** from t
 **Elapsed time of a capture the watch did not start.** Checked carriers: the
 `GET_CURRENT_CAPTURE_STATUS` reply (24 B, only the state crosses), the `0x2010` push (state plus a
 field 2 of unknown meaning, sent on state changes only), `MEDIA_TIME` and remaining time (cut). None
-gives the time already recorded, so the app does not show one: the *joined* timer is the time since the
-watch joined the recording.
+gives the time already recorded, so the app does not show one: a joined recording shows **REC** without digits.
 
 ## Open items
 

@@ -207,9 +207,10 @@ These come from the camera or from Connect IQ, not from missing work. Details an
   or stopped with the camera's own button (timer exact); for a setting the camera reports
   only *which* one changed (the value is cut off), so that row goes back to `–` until you set it
   from the watch. A setting sent while the camera's own menu is open is ignored.
-* **Joining a running recording:** if the app starts while the camera already records, the timer
-  is labelled *joined*: it shows the time since the watch joined, not the length of the recording,
-  which the camera does not send in a form the watch can read.
+* **Joining a running recording:** if the app starts while the camera already records, the watch
+  shows **REC** with a *joined* label and no timer: the camera does not send the recording's length
+  in a form the watch can read. Recordings whose start the watch saw (its own, or one started on
+  the camera while connected) show the exact timer, also after a reconnect.
 * **One Bluetooth client at a time.** Close the Insta360 phone app (or anything else connected to
   the camera) first.
 * **No power-on from the watch.** The camera can be woken from off by a Bluetooth *wake beacon*
