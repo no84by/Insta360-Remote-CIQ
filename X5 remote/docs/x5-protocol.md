@@ -59,16 +59,22 @@ MESSAGE header (bytes after the length):
 2. Send SYNC (optional on current firmware, but harmless).
 3. Send a KEEPALIVE about every 2 s. The camera sends one per second.
 
-### 2.2 Authorization (optional)
+### 2.2 Authorization
 
 `CHECK_AUTHORIZATION` (0x27) with `{1: id string, 2: initiator_type}` makes the camera show an
 **"allow this device?" prompt**. The phone app sends `initiator_type = 2` (Android); `17` is
 `WATCH_GARMINOS`. The camera answers `{1: 1}` (UNAUTHORIZED) immediately, then sends notification
 `0x2011` AUTHORIZATION_RESULT `{1: 0}` once the user taps Allow.
 
-**Control and reads work without it** (§3–§6 were all tested unauthorized). Sending it from a host
-whose BLE address rotates, such as macOS, re-prompts on every connection. Approval does **not**
-unlock longer or extra replies.
+**Notifications are only delivered to an authorized client.** Without `CHECK_AUTHORIZATION` (and,
+the first time, Allow on the camera) no `0x2xxx` push arrives: no mode follow (`0x2053`), no
+capture status, battery or card pushes, no `0x2065`. Each client authorizes for itself; an approval
+given to one client does not carry over to another presenting the same id string. This was
+reproduced independently by the upstream project on its own client.
+
+Commands and their direct replies work without it (§3–§6 were tested unauthorized). Sending it
+from a host whose BLE address rotates, such as macOS, re-prompts on every connection. Approval does
+**not** unlock longer replies.
 
 ### 2.3 Field encoding
 
@@ -161,6 +167,12 @@ version: notification `0x2010`. States seen: 0 idle, 1 recording, 3 interval sho
 10 burst, 19 starlapse (enum `CameraCaptureState`). On connect, this tells you whether, and in which
 mode, the camera is already capturing.
 
+How long it has been capturing is **not** readable on a watch: the reply is 24 bytes, so only the
+state (inner field 1) arrives; the other fields (2, 10) are cut, and their meaning is not
+established. The `0x2010` push carries `{1: state, 2: …}` and is sent on state changes, not as a
+running clock; no field of it is known to be elapsed time. `MEDIA_TIME` (option 29, 25 B) and the
+remaining-time option (41, ≥ 23 B) are cut as well.
+
 ---
 
 ## 5. Footage settings (per mode) ✅
@@ -234,7 +246,11 @@ more. Values for the X5 enums may differ from the names in the community schema 
 cameras): trust the catalog strings (`3840_2160_60`) over enum names.
 
 Notification `0x2065` (CAMERA_NOTIFICATION_WATCH_RES) pushes PhotographyOptions changes:
-`{1: [types], 2: {type: value}, 3: ?}`. For example, after a mode change: `{1:[30,40], 2:{30:0,40:12}}`.
+`{1: [types], 2: {type: value}, 3: function mode}`, 26–30 bytes. It is sent after a change on the
+camera's screen and also right after a mode change, e.g. `{1:[30,40], 2:{30:0,40:12}, 3:6}`. On a
+watch it is cut at 20 bytes: the body keeps `08 <type>` (one or two types), the values and the
+function mode are lost (`08 1f 12 04` for `{1:[31], 2:{31:252}, 3:7}`). A watch learns *which*
+option changed, never its new value.
 
 ### 5.1 Interval / timelapse timing ✅
 
@@ -378,9 +394,19 @@ capture analysis (`tools/insta_frames.py`). Note that GPS metadata in captures c
 
 ## 10. Limits on Garmin Connect IQ
 
-Connect IQ delivers **at most 20 bytes per notification**, has no MTU request, does not expose the
-standard Battery Service and does not implement long reads/writes. The X5 does not split replies, so
-on a watch you get the 16-byte header plus the first 4 body bytes only.
+Connect IQ delivers **at most 20 bytes per notification** (ATT MTU 23), has no MTU request, does not
+expose the standard Battery Service and does not implement long reads/writes. The X5 does not split
+replies, so on a watch you get the 16-byte header plus the first 4 body bytes only.
+
+**No GET answer delivers a value on a watch.** `GET_OPTIONS` and `GET_PHOTOGRAPHY_OPTIONS` replies
+echo the requested types first, so their values start at frame byte 22 at the earliest, past the
+20-byte ceiling; asking again returns the same 20-byte head. **Pushes are the only carriers** of
+camera values on a watch (power source, low battery, card state, capture state, mode), and pushes
+need authorization (§2.2). The one-byte heads of two replies still cross: the capture state of
+`GET_CURRENT_CAPTURE_STATUS` and the card state of `GET_STORAGE 08 00`, both the first field of
+the first block. The same holds for identity:
+`CAMERA_TYPE` ("Insta360 X5", 34 B) is cut before the name, so a watch recognises the X5 by its
+advertised name or by an X5-only push (`0x2053`, `0x2011`, `0x2065`).
 
 | Readable on Connect IQ (≤ 20 B) | Cut off (> 20 B) |
 |---|---|

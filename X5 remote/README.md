@@ -176,8 +176,12 @@ These come from the camera or from Connect IQ, not from missing work. Details an
 * **GPS overlay is for the older (pre-X5) cameras only.** It sends the watch's position with the
   legacy photo command. The X5 path does not use it, so with an X5 the menu item is hidden and the
   watch's GPS stays off.
-* **Changes made on the camera itself are not reported** to the watch (except the mode), and a
-  setting sent while the camera's own menu is open is ignored.
+* **Changes made on the camera itself:** the mode is followed; for a setting the camera reports
+  only *which* one changed (the value is cut off), so that row goes back to `–` until you set it
+  from the watch. A setting sent while the camera's own menu is open is ignored.
+* **Joining a running recording:** if the app starts while the camera already records, the timer
+  shows a leading `+` (`+00:12`): time since the watch joined, not the length of the recording,
+  which the camera does not send in a form the watch can read.
 * **One Bluetooth client at a time.** Close the Insta360 phone app (or anything else connected to
   the camera) first.
 * **No power-on from the watch.** The camera can be woken from off by a Bluetooth *wake beacon*

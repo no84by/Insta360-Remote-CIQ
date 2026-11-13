@@ -9,9 +9,11 @@ work). It is a fork of ArsFabula's Insta360 Remote (MPL-2.0) with a new UI and X
 |---|---|---|
 | Connect, notifications, sync, keep-alive | §2.1 | `BLEBarrel.mc` `enableNotifications`, `onDescriptorWrite`, `keepAlive` |
 | One write at a time, chunks never interleaved | §2.4 | `BLEBarrel.mc` `pump`, `onCharacteristicWrite` |
+| Write recovery: a lost write callback is resumed after two keep-alive ticks; four refused writes in a row drop the link and reconnect through the disconnect path (a wedged link sends no disconnect event); above 16 queued chunks GPS telemetry and keep-alives are dropped (whole frames), commands never | §2.4 | `BLEBarrel.mc` `pump`, `linkLost`, `queueFrame`, `trimQueue` |
+| Model: X5 by advertised name, or by an X5-only push (`0x2053`, `0x2011`, `0x2065`) when the name was missing or unexpected; the X5 session is then started. An unrecognised name on reconnect keeps the model proven earlier in the run | §8, §10 | `BLEBarrel.isX5`, `x5OnlyFrame`, `promoteX5`, `adoptName` |
 | Mode list and switching | §3.1 | `RemoteDelegate.mc` `modeListX5`, `sendCurrentMode`; `BLEBarrel.setSubModeX5` |
 | Follow mode changes made on the camera | §3.2 `0x2053` | `BLEBarrel.onFrameX5` |
-| Sync on connect: adopt a running capture, otherwise push the watch's mode | §4.1 | `BLEBarrel.queryCaptureX5`, `syncOnConnect` |
+| Sync on connect: adopt a running capture, otherwise push the watch's mode. The timer of an adopted capture shows a leading `+` (`+00:12`): it counts from when the watch joined, because the camera's elapsed time cannot be read on a watch (below) | §4.1 | `BLEBarrel.queryCaptureX5`, `syncOnConnect`, `recAdopted`, `timerText` |
 | Video, photo, burst, interval, starlapse | §4 | `RemoteDelegate.onSelect`; `BLEBarrel.shutterX5`, `lapseX5` |
 | Every action waits for the camera (state poll every 2 s, 60 s safety net) | §4.1 | `RemoteView.onTick` |
 | Charging / on-battery, low-battery alarm, SD card state (no card / full / error) on the top arcs, with toasts. No battery level or card space on the X5 (see below) | §6 `GET_STORAGE`, §8 `0x2003` `0x2004` `0x2006` | `BLEBarrel.onFrameX5`, `queryStorageX5`; `RemoteView.drawWidgets` |
@@ -20,6 +22,7 @@ work). It is a fork of ArsFabula's Insta360 Remote (MPL-2.0) with a new UI and X
 | SOUND On / Off = camera mute | §6 `MUTE` (14) | `Settings.frames` `:mute` |
 | Power off camera, after a No / Yes menu with *No* focused (not `Ui.Confirmation`: on the Mk3i it shows Cancel / Confirm without a visible focus, and a second START press confirms). Power-on is not possible from the watch: it needs the wake beacon (§6), and Connect IQ apps cannot advertise. `tools/wake.swift` sends it from a Mac | §6 `SET_SHUTDOWN` (219) | `confirmPowerOff`, `PowerOffDelegate`; `BLEBarrel.shutdownX5` |
 | Per-mode settings: resolution / frame rate, EV (stops at ±4.0), lens, self-timer, photo size, interval, burst, loop length, TimeShift speed, Starlapse duration | §3.3, §5, §5.1 | `Settings.rows`, `Settings.frames`; `RemoteDelegate.stepFocused` |
+| Settings changed on the camera: the `0x2065` push names the option but is cut before the value, so every row carrying that option goes back to `–` until it is set from the watch. Pushes within 3 s of the watch's own write or mode change are its echoes and skipped | §5 | `BLEBarrel.onSettingPushX5`, `Settings.cameraChanged` |
 | Highlight / *Track That* while recording (UP / DOWN) | §4 `0x3C` | `RemoteDelegate.onPreviousPage`, `onNextPage` |
 | Touch: tap a row = focus it, tap elsewhere = START | — | `RemoteDelegate.onSelect`, `onTap`, `focusRowAt` |
 | GPS overlay (hold-UP menu): older cameras only; hidden and GPS off with an X5 | — | `RemoteDelegate.onMenu`, `Main.gpsSync`, `photoWithGps` |
@@ -46,6 +49,12 @@ Battery **level**, card **space**, remaining time and footage settings come back
 than 20 bytes (§10), so the watch only sees their first bytes. What does cross is shown instead:
 USB / BAT / LOW and the card state. The settings can still be **written** from the watch
 (writes are small): see the per-mode settings above.
+
+**Elapsed time of a capture the watch did not start.** Checked carriers: the
+`GET_CURRENT_CAPTURE_STATUS` reply (24 B, only the state crosses), the `0x2010` push (state plus a
+field 2 of unknown meaning, sent on state changes only), `MEDIA_TIME` and remaining time (cut). None
+gives the time already recorded, so the app does not show one: the `+` timer is the time since the
+watch joined the recording.
 
 ## Open items
 
