@@ -27,7 +27,9 @@ if [[ -z $PY ]]; then
     echo
     pkg="$(mktemp -d)/python-installer.pkg"
     if curl -fL --progress-bar -o "$pkg" "$PY_PKG" &&
-       pkgutil --check-signature "$pkg" | grep -q "Python Software Foundation"; then
+       sig="$(pkgutil --check-signature "$pkg")" &&
+       grep -q "Status: signed by a developer certificate issued by Apple for distribution" <<<"$sig" &&
+       grep -q "Python Software Foundation" <<<"$sig"; then
       open "$pkg"
       echo "Click through the Python installer window (it asks for your Mac password)."
       echo "Waiting for it to finish..."
@@ -37,7 +39,7 @@ if [[ -z $PY ]]; then
         sleep 1
       done
     else
-      echo "Download failed or the file is not signed by the Python Software Foundation."
+      echo "Download failed or the file is not validly signed by the Python Software Foundation."
     fi
   fi
   echo

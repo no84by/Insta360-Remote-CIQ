@@ -55,8 +55,8 @@ if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "ARCH=arm64"
 set "PYSETUP=%TEMP%\python-%PY_VER%-%ARCH%.exe"
 echo Downloading the Python installer from python.org...
 curl.exe -fL -o "%PYSETUP%" "https://www.python.org/ftp/python/%PY_VER%/python-%PY_VER%-%ARCH%.exe" || exit /b
-powershell -NoProfile -Command "if ((Get-AuthenticodeSignature '%PYSETUP%').SignerCertificate.Subject -notmatch 'Python Software Foundation') { exit 1 }" || (
-  echo The download is not signed by the Python Software Foundation; not running it.
+powershell -NoProfile -Command "$s = Get-AuthenticodeSignature '%PYSETUP%'; if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'Python Software Foundation') { exit 1 }" || (
+  echo The download is not validly signed by the Python Software Foundation; not running it.
   exit /b
 )
 echo Click "Install Now" in the Python window that opens...
