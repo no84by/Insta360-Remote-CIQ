@@ -306,9 +306,9 @@ class RemoteView extends WatchUi.View {
 				break;
 			case UI_RECORDING:
 				heroColor = C_RED; titleColor = C_RED;
-				title = BLEBarrel.timerText(); timer = true;
+				// a joined capture shows "REC" (text font) and no digits; see BLEBarrel.recTitle
+				title = BLEBarrel.recTitle(); timer = !BLEBarrel.recAdopted;
 				info.add(["", BLEBarrel.currentLabel, C_DIM]);
-				// adopted capture: the timer counts from the join (text font, not the number font)
 				if (BLEBarrel.timerNote() != null) { info.add(["", BLEBarrel.timerNote(), C_AMBER]); }
 				startCue = C_TEXT;
 				break;
