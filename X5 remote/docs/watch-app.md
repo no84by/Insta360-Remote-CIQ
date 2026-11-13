@@ -1,7 +1,6 @@
 # Watch app: how it uses the protocol, and how to extend it
 
-Connect IQ watch app for the Garmin Descent Mk3i 51 mm (other round Connect IQ ≥ 3.1 devices should
-work). It is a fork of ArsFabula's Insta360 Remote (MPL-2.0) with a new UI and X5 support.
+Connect IQ watch app for the Garmin Descent Mk3i 51 mm and the Insta360 X5, the only targets. It is a fork of ArsFabula's Insta360 Remote (MPL-2.0) with a new UI and X5 support.
 
 ## What it does
 

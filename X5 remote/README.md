@@ -41,7 +41,7 @@ most reusable part.
 
 | Part | Version |
 |---|---|
-| Watch | **Garmin Descent Mk3i 51 mm** (only device tested; other round Connect IQ ≥ 3.1 watches may work) |
+| Watch | **Garmin Descent Mk3i 51 mm** (the only target) |
 | Camera | **Insta360 X5, firmware v1.13.21** (other X-series cameras use a different protocol generation) |
 | Connect IQ SDK | 9.3.0 |
 
@@ -251,7 +251,7 @@ webcam).
 * [`docs/tools.md`](docs/tools.md) — Mac tools to reproduce everything: one long-lived BLE session,
   command survey, settings sweeps, the wake beacon, Wi-Fi and watch-log helpers.
 * [`docs/data/`](docs/data/) — the full command / option survey and the camera's own mode catalog
-  for firmware v1.13.21. Results from other cameras or firmware are welcome.
+  for firmware v1.13.21.
 
 ## Credits
 
