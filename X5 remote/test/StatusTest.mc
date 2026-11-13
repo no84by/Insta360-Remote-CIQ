@@ -190,9 +190,9 @@ function disconnectDoesNotReinit(logger) {
 	return BLEBarrel.profileRegs == before && BLEBarrel.recState == BLEBarrel.stateStopRec;
 }
 
-// Real watch log: after STOP the X5 keeps pushing 0x2010 capture status (08 18 = state 24 while it
-// finishes the file). The legacy start/stop check (command byte 0x10) read it as "recording
-// started": the watch went back to recording and the timer restarted at 0.
+// Real watch log (PureVideo): during STOP the X5 still pushes 0x2010 capture status 08 18 (state 24,
+// PureVideo recording) before state 0. The legacy start/stop check (command byte 0x10) read it as
+// "recording started": the watch went back to recording and the timer restarted at 0.
 (:test)
 function captureStatusPushDoesNotRestartRecording(logger) {
 	var d = new BLEBarrel.BleDevice();
@@ -359,8 +359,8 @@ function capPush(st) {
 // Real Mk3i logs: during the watch's own stop the camera pushes `state=1 rec=3` BEFORE
 // `state=0 rec=3`: that tail is not a new recording. Right after the stop is confirmed, a
 // recording started on the camera's own button (`push state=1 rec=0`) is followed at once, with
-// an exact, unmarked timer; a stop on the camera is followed too. Photo states and the
-// file-writing state 24 never start the timer.
+// an exact, unmarked timer; a stop on the camera is followed too. Photo states never start the
+// timer.
 (:test)
 function cameraSideRecordingFollowed(logger) {
 	var d = new BLEBarrel.BleDevice();
@@ -379,12 +379,45 @@ function cameraSideRecordingFollowed(logger) {
 	BLEBarrel.currentMode = "p0"; BLEBarrel.videoMode = false;
 	d.reassembleX5(capPush(4)); d.reassembleX5(capPush(10)); d.reassembleX5(capPush(3)); d.reassembleX5(capPush(19));
 	var photo = BLEBarrel.recState == BLEBarrel.stateStopRec && BLEBarrel.currentMode.equals("p0");
-	d.reassembleX5(capPush(24));                 // writing the file
-	var writing = BLEBarrel.recState == BLEBarrel.stateStopRec;
 	logger.debug("tail=" + tail + " stopped=" + stopped + " started=" + started
-		+ " camStop=" + camStop + " photo=" + photo + " writing=" + writing);
+		+ " camStop=" + camStop + " photo=" + photo);
 	resetTestState(d);
-	return tail && stopped && started && camStop && photo && writing;
+	return tail && stopped && started && camStop && photo;
+}
+
+// Real Mk3i log in PureVideo (v11): state 24 is PureVideo recording. Watch START confirmed by
+// `push state=24 rec=2`; the stop tail `push state=24 rec=3` then `push state=0 rec=3`; a start on
+// the camera `push state=24 rec=0` is followed and names PureVideo; a connect mid-recording
+// (`state=24 (connect sync)`) adopts PureVideo.
+(:test)
+function pureVideoState24IsRecording(logger) {
+	var d = new BLEBarrel.BleDevice();
+	resetTestState(d);
+	BLEBarrel.currentMode = "v11"; BLEBarrel.currentLabel = "PureVideo";
+	BLEBarrel.recState = BLEBarrel.stateStarting;
+	d.reassembleX5(capPush(24));
+	var confirmed = BLEBarrel.recState == BLEBarrel.stateStartRec && !BLEBarrel.recAdopted;
+	BLEBarrel.recState = BLEBarrel.stateStopping;
+	d.reassembleX5(capPush(24));                 // stop tail
+	var tail = BLEBarrel.recState == BLEBarrel.stateStopping;
+	d.reassembleX5(capPush(0));
+	var stopped = BLEBarrel.recState == BLEBarrel.stateStopRec;
+	BLEBarrel.currentMode = "v0"; BLEBarrel.currentLabel = "Video";   // watch shows Video
+	d.reassembleX5(capPush(24));                 // started on the camera, in PureVideo
+	var camStart = BLEBarrel.recState == BLEBarrel.stateStartRec && BLEBarrel.currentMode.equals("v11")
+		&& BLEBarrel.recTitle().equals("00:00");
+	d.reassembleX5(capPush(0));
+	var camStop = BLEBarrel.recState == BLEBarrel.stateStopRec;
+	// connect mid-recording: real reply 0a 06 08 18 (cut at 20 bytes)
+	BLEBarrel.currentMode = "v0";
+	d.capSeq = 0x47; d.syncOnConnect = true;
+	d.reassembleX5([0x18, 0, 0, 0, 0x04, 0, 0, 0xc8, 0x00, 0x02, 0x47, 0, 0, 0x80, 0, 0, 0x0a, 0x06, 0x08, 0x18]b);
+	var sync = BLEBarrel.currentMode.equals("v11") && BLEBarrel.recState == BLEBarrel.stateStartRec
+		&& BLEBarrel.recTitle().equals("REC");
+	logger.debug("confirmed=" + confirmed + " tail=" + tail + " stopped=" + stopped + " camStart=" + camStart
+		+ " camStop=" + camStop + " sync=" + sync);
+	resetTestState(d);
+	return confirmed && tail && stopped && camStart && camStop && sync;
 }
 
 // Stand-in for the characteristic argument (the handler does not use it).
@@ -392,38 +425,43 @@ function noChar() {
 	return null;
 }
 
-// App restart: a start / stop pending at close is reverted. A recording restored from storage
-// is shown as joined at the connect sync (it may have been restarted on the camera meanwhile);
-// a link reconnect within the app run keeps the exact timer.
+// App restart: a start / stop pending at close is reverted. Real Mk3i: reopening the app during
+// a recording the watch started showed the exact timer, then "joined" after the sync; now the
+// restored start is kept, exact. A restored recording that was itself joined stays joined. A
+// recording found at the sync while the watch thought it stopped is joined.
 (:test)
-function restoredRecordingShownJoined(logger) {
+function restoredRecordingKeepsTimer(logger) {
 	var d = new BLEBarrel.BleDevice();
 	resetTestState(d);
 	BLEBarrel.restoreRec(BLEBarrel.stateStarting, false);
-	var startReverted = BLEBarrel.recState == BLEBarrel.stateStopRec && !BLEBarrel.recRestored;
+	var startReverted = BLEBarrel.recState == BLEBarrel.stateStopRec;
 	BLEBarrel.restoreRec(BLEBarrel.stateStopping, false);
-	var stopReverted = BLEBarrel.recState == BLEBarrel.stateStartRec && BLEBarrel.recRestored;
+	var stopReverted = BLEBarrel.recState == BLEBarrel.stateStartRec;
 	BLEBarrel.restoreRec(null, null);
 	var none = BLEBarrel.recState == BLEBarrel.stateStopRec;
-	// restored recording, camera still recording at the sync: joined
+	var reply = [0x18, 0, 0, 0, 0x04, 0, 0, 0xc8, 0x00, 0x02, 0x45, 0, 0, 0x80, 0, 0, 0x0a, 0x06, 0x08, 0x18]b;
+	// restored own recording (PureVideo, started 10 min ago), camera still recording: exact
 	BLEBarrel.restoreRec(BLEBarrel.stateStartRec, false);
-	BLEBarrel.startRecTime = new Toybox.Time.Moment(Toybox.Time.now().value() - 600);
-	d.capSeq = 0x45; d.syncOnConnect = true;
-	d.reassembleX5([0x18, 0, 0, 0, 0x04, 0, 0, 0xc8, 0x00, 0x02, 0x45, 0, 0, 0x80, 0, 0, 0x0a, 0x06, 0x08, 0x01]b);
-	var joined = BLEBarrel.recState == BLEBarrel.stateStartRec && BLEBarrel.recAdopted
-		&& BLEBarrel.recTitle().equals("REC") && !BLEBarrel.recRestored;
-	// then a link reconnect in the same run during the watch's own recording: exact timer kept
-	BLEBarrel.recStarted(false);
-	var t0 = new Toybox.Time.Moment(Toybox.Time.now().value() - 75);
+	var t0 = new Toybox.Time.Moment(Toybox.Time.now().value() - 600);
 	BLEBarrel.startRecTime = t0;
-	d.capSeq = 0x46; d.syncOnConnect = true;
-	d.reassembleX5([0x18, 0, 0, 0, 0x04, 0, 0, 0xc8, 0x00, 0x02, 0x46, 0, 0, 0x80, 0, 0, 0x0a, 0x06, 0x08, 0x01]b);
-	var kept = !BLEBarrel.recAdopted && BLEBarrel.startRecTime.value() == t0.value();
+	d.capSeq = 0x45; d.syncOnConnect = true;
+	d.reassembleX5(reply);
+	var exact = BLEBarrel.recState == BLEBarrel.stateStartRec && !BLEBarrel.recAdopted
+		&& BLEBarrel.startRecTime.value() == t0.value() && BLEBarrel.recTitle().equals("10:00");
+	// restored joined recording stays joined
+	BLEBarrel.restoreRec(BLEBarrel.stateStartRec, true);
+	d.capSeq = 0x45; d.syncOnConnect = true;
+	d.reassembleX5(reply);
+	var stillJoined = BLEBarrel.recAdopted && BLEBarrel.recTitle().equals("REC");
+	// the watch thought it stopped, the camera records: joined
+	BLEBarrel.restoreRec(BLEBarrel.stateStopRec, false);
+	d.capSeq = 0x45; d.syncOnConnect = true;
+	d.reassembleX5(reply);
+	var joined = BLEBarrel.recState == BLEBarrel.stateStartRec && BLEBarrel.recAdopted;
 	logger.debug("startReverted=" + startReverted + " stopReverted=" + stopReverted + " none=" + none
-		+ " joined=" + joined + " kept=" + kept);
+		+ " exact=" + exact + " stillJoined=" + stillJoined + " joined=" + joined);
 	resetTestState(d);
-	BLEBarrel.recRestored = false;
-	return startReverted && stopReverted && none && joined && kept;
+	return startReverted && stopReverted && none && exact && stillJoined && joined;
 }
 
 // The disconnect event caused by our own unpair (in linkLost) must not drop the link the
