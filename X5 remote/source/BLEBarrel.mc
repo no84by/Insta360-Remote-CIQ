@@ -992,7 +992,8 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 		// var rssi;
 		var iter;
 
-		for (var result = scanResults.next(); result != null; result = scanResults.next()) {
+		for (var rawResult = scanResults.next(); rawResult != null; rawResult = scanResults.next()) {
+			var result = rawResult as BluetoothLowEnergy.ScanResult;
 			uuids = result.getServiceUuids();
 			deviceName = result.getDeviceName();
 			if (deviceName != null && deviceName.length() >= 3 && deviceName.substring(0, 3).equals("X5 ")) {
@@ -1083,8 +1084,8 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 		var bias = 0l;
 		// Need to convert to float 64bit, but not directly supported by Connect IQ.
 		// convert back and forth from 32bit float to 32bit INT to have a "bitwise" representation
-		t32.encodeNumber(single,Lang.NUMBER_FORMAT_FLOAT,null);
-		tb = t32.decodeNumber(NUMBER_FORMAT_UINT32, null);
+		t32.encodeNumber(single,Lang.NUMBER_FORMAT_FLOAT,{});
+		tb = t32.decodeNumber(NUMBER_FORMAT_UINT32, {});
 		// get the sign
 		ts = tb & 0x80000000;
 		// get the exponent part 
@@ -1102,10 +1103,10 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 		// cut the new value in 2 32bit chunks
 		tb1 = tb;
 		tb1 >>= 32;
-		d1.encodeNumber(tb1, NUMBER_FORMAT_UINT32, null);
+		d1.encodeNumber(tb1, NUMBER_FORMAT_UINT32, {});
 		tb1 <<=32;
 		tb2 = tb - tb1;
-		d2.encodeNumber(tb2, NUMBER_FORMAT_UINT32, null);
+		d2.encodeNumber(tb2, NUMBER_FORMAT_UINT32, {});
 		// debug ("[toDouble] " + tb.format("%x"));
 		// build the final bitArray, little endian
 		double.addAll(d2);
@@ -1173,7 +1174,7 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 		// Video & Photo telemetry are encoded differently.
 		if (videoMode) {
 			// encode timestamp
-			temp32.encodeNumber(uxEpoch.value(),Lang.NUMBER_FORMAT_UINT32,null);
+			temp32.encodeNumber(uxEpoch.value(),Lang.NUMBER_FORMAT_UINT32,{});
 			header.addAll(temp32);
 			header.addAll(filler);
 			// North or South

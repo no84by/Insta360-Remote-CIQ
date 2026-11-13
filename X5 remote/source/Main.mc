@@ -67,7 +67,7 @@ class Main extends Application.AppBase {
 		}
 	}
 
-	function onPosition(info) {
+	function onPosition(info as Position.Info) as Void {
 		if (bleDevice != null) { bleDevice.sendPosition(info); }
 	}
 
