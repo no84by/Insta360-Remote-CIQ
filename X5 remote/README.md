@@ -45,16 +45,38 @@ most reusable part.
 | Camera | **Insta360 X5, firmware v1.13.21** (other X-series cameras use a different protocol generation) |
 | Connect IQ SDK | 9.3.0 |
 
-## Install
+## Install without a Garmin account or the store
 
-There is no store release. Build and sideload it yourself:
+There is no store release. A ready-built app file (`.prg`) for each supported watch is attached to
+the GitHub release, with a `SHA256SUMS` file to check the download.
+
+1. Download `insta360-x5-remote-<version>-<device>.prg` for your watch from the release page.
+   `descentmk351mm` is the Descent Mk3i 51 mm.
+2. Connect the watch to the computer with its USB cable. It shows up as a media device (MTP).
+3. Copy the `.prg` file into the watch's `GARMIN/APPS` folder:
+   * **Windows:** File Explorer, open the watch → Internal Storage → `GARMIN` → `APPS`.
+   * **macOS:** macOS has no built-in MTP support; use an MTP client such as
+     [OpenMTP](https://openmtp.ganeshrvel.com). If it cannot open the watch, quit Image Capture
+     (and Photos) first: they can grab the device as soon as it is plugged in.
+   * **Linux:** the file manager (GVfs), `gio copy file.prg "mtp://<device>/Internal Storage/GARMIN/APPS/"`,
+     or mount it with `jmtpfs ~/mnt` and copy with `cp`.
+4. Unplug the watch. The app appears in the widget / glance loop (scroll up or down from the watch
+   face).
+
+To remove it, delete the file from `GARMIN/APPS` the same way.
+
+No account, phone app or store is involved, and nothing is installed on the computer apart from the
+MTP client.
+
+### Build it yourself
+
+With the Connect IQ SDK and your own developer key:
 
 ```bash
-monkeyc -f monkey.jungle -d descentmk351mm -y <your developer_key.der> -o bin/remote.prg
+monkeyc -f monkey.jungle -d descentmk351mm -y /path/to/developer_key.der -o bin/remote.prg
 ```
 
-Connect the watch over USB and copy `bin/remote.prg` to `GARMIN/Apps/` (MTP; on macOS use OpenMTP
-or similar). Unplug the watch; the app appears in the apps list.
+Then copy `bin/remote.prg` as above.
 
 Before the first use, close the Insta360 phone app (the X5 accepts only **one** Bluetooth client at a
 time) and wake the camera. On the first connection the camera may ask you to allow the remote on its
