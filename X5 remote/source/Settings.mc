@@ -158,6 +158,43 @@ module Settings {
 		return [BLEBarrel.setPhotoOptX5(row[4], row[6], v)];
 	}
 
+	// PhotographyOptions types a row writes (0x2065 pushes name changed options by these).
+	function optionTypes(row) {
+		if (row[3] == :opt || row[3] == :ev) { return [row[6]]; }
+		if (row[3] == :burst) { return [44, 51]; }
+		return [];
+	}
+
+	// The camera reported option `type` changed (0x2065). fm (function mode) and v (raw value) are
+	// null when the push was cut at 20 bytes, which is always the case on a watch: then every row
+	// carrying that option goes back to unknown ("–"), in every mode, since the function mode is
+	// cut too. Only a whole push (a longer link) gives the value; it is shown only if it is one of
+	// the row's known values.
+	function cameraChanged(type, fm, v) {
+		var ids = $.modeListX5();
+		for (var m = 0; m < ids.size(); m++) {
+			var id = ids[m][1];
+			var rs = rows(id);
+			for (var r = 0; r < rs.size(); r++) {
+				var row = rs[r];
+				if (optionTypes(row).indexOf(type) < 0 || (fm != null && row[4] != fm)) { continue; }
+				var k = key(id, row);
+				var i = -1;
+				if (v != null && row[3] != :burst) {
+					var x = (row[3] == :ev) ? (((v & 1) == 0) ? v / 2 : -(v + 1) / 2) : v;   // zig-zag
+					i = row[5].indexOf(x);
+				}
+				if (i >= 0) {
+					vals[k] = i;
+					acked[k] = true;
+				} else {
+					vals.remove(k);
+					acked.remove(k);
+				}
+			}
+		}
+	}
+
 	function clampFocus(id) {
 		if (focus > rows(id).size()) { focus = 0; }
 	}

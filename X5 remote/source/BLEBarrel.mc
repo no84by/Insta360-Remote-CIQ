@@ -648,6 +648,8 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 				adoptMode(id);
 				WatchUi.requestUpdate();
 			}
+		} else if (code == 0x2065) {
+			onSettingPushX5(f, body, total);
 		} else if (code == 0x2003 || code == 0x2004) { // battery update / low
 			debug("[batt] notify " + code.format("%04x") + " " + hex(body, 12));
 			if (code == 0x2004) { camBattLow = true; }
@@ -667,6 +669,38 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 		}
 	}
 
+	// 0x2065 WATCH_RES: {1: [option types], 2: PhotographyOptions{type: value}, 3: function mode},
+	// 26-30 bytes. On a watch it is cut at 20: the body keeps `08 <type>` (one or two types), the
+	// values and the function mode are lost. Pushed after a setting is changed on the camera, and
+	// also right after a mode change and possibly after the watch's own writes: those echoes (the
+	// watch knows what it sent) are skipped.
+	var lastSetMs = null;   // System.getTimer() of the watch's last settings write
+	function onSettingPushX5(f, body, total) {
+		var now = System.getTimer();
+		if (setSeq >= 0 || now < modeHoldUntil || (lastSetMs != null && now - lastSetMs < 3000)) {
+			debug("[opt] camera push after our own change, ignored");
+			return;
+		}
+		var whole = f.size() >= total;   // a cut varint would read as a wrong value
+		var types = [];
+		var vals = {};
+		var fm = null;
+		var t = pbFields(body);
+		for (var i = 0; i < t.size(); i++) {
+			if (t[i][0] == 1 && t[i][1] == 0) { types.add(t[i][2].toNumber()); }
+			else if (whole && t[i][0] == 3 && t[i][1] == 0) { fm = t[i][2].toNumber(); }
+			else if (whole && t[i][0] == 2 && t[i][1] == 2) {
+				var o = pbFields(t[i][2]);
+				for (var j = 0; j < o.size(); j++) { if (o[j][1] == 0) { vals[o[j][0]] = o[j][2].toNumber(); } }
+			}
+		}
+		debug("[opt] camera changed " + types + (whole ? " fm=" + fm + " " + vals : " (cut: value unknown)"));
+		for (var i = 0; i < types.size(); i++) {
+			Settings.cameraChanged(types[i], fm, whole ? vals.get(types[i]) : null);
+		}
+		WatchUi.requestUpdate();
+	}
+
 	// GET_CURRENT_CAPTURE_STATUS (0x0F): reply body 0a <len> 08 <state> ... ; state != 0 = capturing
 	var capSeq = -1;
 	function queryCaptureX5() {
@@ -683,6 +717,7 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 		if (device == null) { return; }
 		for (var i = 0; i < frames.size(); i++) { sendCMD(frames[i]); }
 		setSeq = SeqNo;   // the last frame's reply decides
+		lastSetMs = System.getTimer();
 		setKey = key;
 	}
 

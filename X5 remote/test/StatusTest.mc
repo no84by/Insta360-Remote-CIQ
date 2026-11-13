@@ -227,3 +227,50 @@ function settingWaitsForModeChange(logger) {
 	logger.debug("pending=" + pending + " confirmed=" + confirmed + " expired=" + expired);
 	return !pending && confirmed && expired;
 }
+
+// 0x2065 WATCH_RES as a watch gets it (survey frame `[[1,31],[2,[[31,252]]],[3,7]]`, 26 B, cut at
+// 20): only the option id survives. RES rows go back to unknown, other rows keep their values.
+(:test)
+function settingPushCutMarksRowUnknown(logger) {
+	var d = new BLEBarrel.BleDevice();
+	BLEBarrel.deviceName = "X5 1ABCDE";
+	BLEBarrel.modeReq = null; BLEBarrel.modeHoldUntil = 0;
+	d.setSeq = -1; d.lastSetMs = null;
+	Settings.vals = {"v0:res" => 8, "v6:res" => 8, "v0:ev" => 12, "p0:size" => 0};
+	Settings.acked = {"v0:res" => true, "v6:res" => true, "v0:ev" => true, "p0:size" => true};
+	d.reassembleX5([0x1a, 0, 0, 0, 0x04, 0, 0, 0x65, 0x20, 0x02, 0xff, 0x8a, 0x43, 0xf4, 0, 0, 0x08, 0x1f, 0x12, 0x04]b);
+	var row = Settings.rows("v0")[0];
+	var ok1 = Settings.label("v0", row).equals("–") && !Settings.isAcked("v0", row)
+		&& Settings.vals["v6:res"] == null && Settings.vals["v0:ev"] == 12 && Settings.vals["p0:size"] == 0;
+	// two ids in one cut push (survey `[[1,30],[1,40],…]`, 30 B): photo SIZE (40) goes unknown
+	d.reassembleX5([0x1e, 0, 0, 0, 0x04, 0, 0, 0x65, 0x20, 0x02, 0xff, 0x8a, 0x43, 0xf4, 0, 0, 0x08, 0x1e, 0x08, 0x28]b);
+	logger.debug("v0:res=" + Settings.vals["v0:res"] + " p0:size=" + Settings.vals["p0:size"] + " ev=" + Settings.vals["v0:ev"]);
+	var ok2 = Settings.vals["p0:size"] == null && Settings.vals["v0:ev"] == 12;
+	Settings.vals = {}; Settings.acked = {};
+	return ok1 && ok2;
+}
+
+// The same push right after the watch's own setting write is its echo: nothing is forgotten.
+// A whole push (longer link) carries the value and the function mode: only that mode's row is set.
+(:test)
+function settingPushEchoAndWhole(logger) {
+	var d = new BLEBarrel.BleDevice();
+	BLEBarrel.deviceName = "X5 1ABCDE";
+	BLEBarrel.modeReq = null; BLEBarrel.modeHoldUntil = 0;
+	d.setSeq = -1; d.lastSetMs = Toybox.System.getTimer();
+	Settings.vals = {"v0:res" => 8}; Settings.acked = {"v0:res" => true};
+	var cut = [0x1a, 0, 0, 0, 0x04, 0, 0, 0x65, 0x20, 0x02, 0xff, 0x8a, 0x43, 0xf4, 0, 0, 0x08, 0x1f, 0x12, 0x04]b;
+	d.reassembleX5(cut);
+	var echoKept = Settings.vals["v0:res"] == 8;
+	d.lastSetMs = null;
+	Settings.vals = {"v6:res" => 8}; Settings.acked = {"v6:res" => true};
+	var whole = cut.slice(0, null);
+	whole.addAll([0xf8, 0x01, 0xfc, 0x01, 0x18, 0x07]b);   // 31 = 252 (5.7K60), function mode 7
+	d.reassembleX5(whole);
+	var row = Settings.rows("v0")[0];
+	logger.debug("echoKept=" + echoKept + " v0=" + Settings.label("v0", row) + " v6=" + Settings.vals["v6:res"]);
+	var ok = echoKept && Settings.label("v0", row).equals("5.7K60") && Settings.isAcked("v0", row)
+		&& Settings.vals["v6:res"] == 8;
+	Settings.vals = {}; Settings.acked = {};
+	return ok;
+}
