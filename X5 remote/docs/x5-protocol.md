@@ -163,8 +163,10 @@ Notes:
 ### 4.1 Capture status ✅
 
 `GET_CURRENT_CAPTURE_STATUS` (0x0F), empty body → `{1: {1: state, 2: …, 10: submode}}`. Push
-version: notification `0x2010`. States seen: 0 idle, 1 recording, 3 interval shooting, 4 single photo,
-10 burst, 19 starlapse (enum `CameraCaptureState`). On connect, this tells you whether, and in which
+version: notification `0x2010`. States seen: 0 idle, 1 recording (Video), 3 interval shooting,
+4 single photo, 10 burst, 19 starlapse, 24 PureVideo recording (enum `CameraCaptureState`). State
+24 was confirmed on a watch in PureVideo: START is answered with `state=24`, a stop pushes
+`state=24` then `state=0`, and a connect mid-recording reads `state=24`. On connect, this tells you whether, and in which
 mode, the camera is already capturing.
 
 How long it has been capturing is **not** readable on a watch: the reply is 24 bytes, so only the
