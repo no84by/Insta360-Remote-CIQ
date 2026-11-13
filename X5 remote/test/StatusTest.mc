@@ -238,15 +238,19 @@ function settingPushCutMarksRowUnknown(logger) {
 	d.setSeq = -1; d.lastSetMs = null;
 	Settings.vals = {"v0:res" => 8, "v6:res" => 8, "v0:ev" => 12, "p0:size" => 0};
 	Settings.acked = {"v0:res" => true, "v6:res" => true, "v0:ev" => true, "p0:size" => true};
+	d.lastModePushMs = null; d.optPending = null;
 	d.reassembleX5([0x1a, 0, 0, 0, 0x04, 0, 0, 0x65, 0x20, 0x02, 0xff, 0x8a, 0x43, 0xf4, 0, 0, 0x08, 0x1f, 0x12, 0x04]b);
 	var row = Settings.rows("v0")[0];
-	var ok1 = Settings.label("v0", row).equals("–") && !Settings.isAcked("v0", row)
+	var held = Settings.vals["v0:res"] == 8;   // waits for a possible mode change first
+	d.flushSettingPush(Toybox.System.getTimer() + 2000);
+	var ok1 = held && Settings.label("v0", row).equals("–") && !Settings.isAcked("v0", row)
 		&& Settings.vals["v6:res"] == null && Settings.vals["v0:ev"] == 12 && Settings.vals["p0:size"] == 0;
 	// two ids in one cut push (survey `[[1,30],[1,40],…]`, 30 B): photo SIZE (40) goes unknown
 	d.reassembleX5([0x1e, 0, 0, 0, 0x04, 0, 0, 0x65, 0x20, 0x02, 0xff, 0x8a, 0x43, 0xf4, 0, 0, 0x08, 0x1e, 0x08, 0x28]b);
+	d.flushSettingPush(Toybox.System.getTimer() + 2000);
 	logger.debug("v0:res=" + Settings.vals["v0:res"] + " p0:size=" + Settings.vals["p0:size"] + " ev=" + Settings.vals["v0:ev"]);
 	var ok2 = Settings.vals["p0:size"] == null && Settings.vals["v0:ev"] == 12;
-	Settings.vals = {}; Settings.acked = {};
+	resetTestState(d);
 	return ok1 && ok2;
 }
 
@@ -271,7 +275,7 @@ function settingPushEchoAndWhole(logger) {
 	logger.debug("echoKept=" + echoKept + " v0=" + Settings.label("v0", row) + " v6=" + Settings.vals["v6:res"]);
 	var ok = echoKept && Settings.label("v0", row).equals("5.7K60") && Settings.isAcked("v0", row)
 		&& Settings.vals["v6:res"] == 8;
-	Settings.vals = {}; Settings.acked = {};
+	resetTestState(d);
 	return ok;
 }
 
@@ -293,6 +297,53 @@ function adoptedRecordingTimerMarked(logger) {
 	d.reassembleX5([0x18, 0, 0, 0, 0x04, 0, 0, 0xc8, 0x00, 0x02, 0x42, 0, 0, 0x80, 0, 0, 0x0a, 0x06, 0x08, 0x01]b);
 	var own = BLEBarrel.timerText();
 	logger.debug("adopted=" + adopted + " own=" + own);
-	BLEBarrel.recState = BLEBarrel.stateStopRec;
-	return adopted.equals("+00:00") && own.equals("00:00") && !BLEBarrel.recAdopted;
+	var ok = adopted.equals("+00:00") && own.equals("00:00") && !BLEBarrel.recAdopted;
+	resetTestState(d);
+	return ok;
+}
+
+// Reconnect while the watch's own recording runs (started 75 s ago): the connect sync finds the
+// camera still recording and keeps the timer, unmarked. If the camera stopped meanwhile, the
+// sync shows it stopped.
+(:test)
+function reconnectKeepsOwnRecordingTimer(logger) {
+	var d = new BLEBarrel.BleDevice();
+	resetTestState(d);
+	BLEBarrel.recState = BLEBarrel.stateStartRec; BLEBarrel.recAdopted = false;
+	var t0 = new Toybox.Time.Moment(Toybox.Time.now().value() - 75);
+	BLEBarrel.startRecTime = t0;
+	d.capSeq = 0x43; d.syncOnConnect = true;
+	d.reassembleX5([0x18, 0, 0, 0, 0x04, 0, 0, 0xc8, 0x00, 0x02, 0x43, 0, 0, 0x80, 0, 0, 0x0a, 0x06, 0x08, 0x01]b);
+	var kept = BLEBarrel.startRecTime.value() == t0.value() && !BLEBarrel.recAdopted
+		&& BLEBarrel.recState == BLEBarrel.stateStartRec;
+	var text = BLEBarrel.timerText();
+	d.capSeq = 0x44; d.syncOnConnect = true;
+	d.reassembleX5([0x18, 0, 0, 0, 0x04, 0, 0, 0xc8, 0x00, 0x02, 0x44, 0, 0, 0x80, 0, 0, 0x0a, 0x06, 0x08, 0x00]b);
+	var stopped = BLEBarrel.recState == BLEBarrel.stateStopRec;
+	logger.debug("kept=" + kept + " text=" + text + " stopped=" + stopped);
+	resetTestState(d);
+	return kept && text.substring(0, 1).equals("0") && stopped;
+}
+
+// Mode changed on the camera: the survey order is 0x2065 (new mode's stored values, cut) then
+// 0x2053. Nothing changed, so no row is forgotten, in either order.
+(:test)
+function settingPushWithModeChangeKeepsRows(logger) {
+	var d = new BLEBarrel.BleDevice();
+	resetTestState(d);
+	var opt = [0x1e, 0, 0, 0, 0x04, 0, 0, 0x65, 0x20, 0x02, 0xff, 0x8a, 0x43, 0xf4, 0, 0, 0x08, 0x1e, 0x08, 0x28]b;
+	var toPhoto = [0x16, 0, 0, 0, 0x04, 0, 0, 0x53, 0x20, 0x02, 0xff, 0x8a, 0x43, 0xf4, 0, 0, 0x08, 0x00, 0x10, 0x64]b;
+	var toVideo = [0x16, 0, 0, 0, 0x04, 0, 0, 0x53, 0x20, 0x02, 0xff, 0x8a, 0x43, 0xf4, 0, 0, 0x08, 0x64, 0x10, 0x00]b;
+	Settings.vals = {"p0:size" => 1}; Settings.acked = {"p0:size" => true};
+	d.reassembleX5(opt);       // before the 0x2053
+	d.reassembleX5(toPhoto);
+	d.flushSettingPush(Toybox.System.getTimer() + 5000);
+	var before = Settings.vals["p0:size"] == 1 && BLEBarrel.currentMode.equals("p0");
+	d.reassembleX5(toVideo);   // after the 0x2053
+	d.reassembleX5(opt);
+	d.flushSettingPush(Toybox.System.getTimer() + 5000);
+	var after = Settings.vals["p0:size"] == 1;
+	logger.debug("before=" + before + " after=" + after + " mode=" + BLEBarrel.currentMode);
+	resetTestState(d);
+	return before && after;
 }

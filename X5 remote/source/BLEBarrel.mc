@@ -74,7 +74,7 @@ const Q_KEEP = 0;        // user commands, queries, sync: never dropped
 const Q_DROP = 1;        // first chunk of a droppable frame
 const Q_DROP_CONT = 2;   // further chunks of that frame
 const QUEUE_CAP = 16;    // chunks; above it droppable frames are discarded, oldest first
-const WEDGE_LIMIT = 4;   // consecutive refused writes before the link is dropped and rebuilt
+const WEDGE_LIMIT = 4;   // keep-alive ticks (2 s) in a row with refused writes and none accepted
 
 function enqueue(chunk, kind) {
 	queue.add(chunk);
@@ -298,34 +298,21 @@ function setLapseDurX5(tm, s) {
 function setSensorX5(v) { return frameX5(0x41, [0x08, v]b); }
 function shutdownX5() { return frameX5(0xDB, []b); }   // SET_SHUTDOWN, empty body
 
-// Camera model. The advertised name is the first hint ("X5 …"); a frame only the X5 protocol
-// sends (x5OnlyFrame) proves it, also when the name was missing or unexpected.
-var x5Proto = false;     // X5 proven for this run (by name at connect, or by an X5-only frame)
+// Camera model, from the advertised name of the camera the watch connects to. Older cameras the
+// upstream app supports use the legacy command set; prefix -> menu level of the legacy list.
+// Any other name gets the X5 protocol: it is the camera this fork is built for, and the X5 only
+// sends notifications after the X5 session start (CHECK_AUTHORIZATION, docs/x5-protocol.md §2.2),
+// so its frames cannot identify it before that. No reply that names the model fits in a 20-byte
+// notification (CAMERA_TYPE "Insta360 X5" is 34 bytes, cut before the name).
+const LEGACY_MODELS = {"ONE" => 1, "X3 " => 1, "X4 " => 2, "GO2" => 0, "GO3" => 0, "GO " => 0, "Ace" => 0};
 
-function nameIsX5(n) {
-	return n != null && n.length() >= 3 && n.substring(0, 3).equals("X5 ");
-}
-
-// Older cameras the upstream app supports (they use the legacy command set).
-function nameIsLegacy(n) {
-	if (n == null || n.length() < 3) { return false; }
-	var p = n.substring(0, 3);
-	return p.equals("ONE") || p.equals("X3 ") || p.equals("X4 ") || p.equals("GO2") || p.equals("GO3")
-		|| p.equals("GO ") || p.equals("Ace");
+function legacyLevel(n) {
+	if (n == null || n.length() < 3) { return null; }
+	return LEGACY_MODELS.get(n.substring(0, 3));
 }
 
 function isX5() {
-	return x5Proto || nameIsX5(deviceName);
-}
-
-// Notification codes that only the X5 protocol generation sends: CAM_SUBMODE_CHANGE (0x2053),
-// AUTHORIZATION_RESULT (0x2011), WATCH_RES (0x2065). All carry the code in the 16-byte header,
-// so they are recognised even when cut at 20 bytes. (No reply carries an identity that fits:
-// CAMERA_TYPE "Insta360 X5" is a 34-byte reply, cut before the name.)
-function x5OnlyFrame(v) {
-	if (v.size() < 16 || v[4] != 0x04) { return false; }
-	var code = v[7] | (v[8] << 8);
-	return code == 0x2053 || code == 0x2011 || code == 0x2065;
+	return deviceName != null && !deviceName.equals("n/a") && legacyLevel(deviceName) == null;
 }
 
 var currentMode = "DefaultV";
@@ -447,7 +434,8 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 	// once its write was accepted, and keep-alives are only sent when the queue is idle.
 	var writing = false;
 	var writingTicks = 0;
-	var wedgeCount = 0;   // consecutive refused writes; reset by an accepted write
+	var wedgeCount = 0;   // ticks with a refused write since the last accepted one
+	var refusedThisTick = false;
 	var linkReady = false;
 	var notifRetry = 0;   // X5: notifications enabled + sync sent; nothing is sent before
 
@@ -479,15 +467,19 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 			queue = queue.slice(1, null);
 			queueKind = queueKind.slice(1, null);
 		} catch (ex) {
-			// Stack busy: keep the chunk, retry from the next callback / keep-alive tick. A link
-			// that keeps refusing never recovers by itself (no disconnect event comes): after
-			// WEDGE_LIMIT refusals in a row, drop it and reconnect like after a disconnect.
-			wedgeCount++;
+			// Stack busy: keep the chunk, retry from the next callback / keep-alive tick. A burst
+			// of writes (session start, settings) can meet a briefly busy stack, so refusals count
+			// once per keep-alive tick. A link that keeps refusing never recovers by itself (no
+			// disconnect event comes): after WEDGE_LIMIT ticks with refusals and no accepted
+			// write (6-8 s), drop it and reconnect like after a disconnect.
 			debug("[pump] busy, " + queue.size() + " queued: " + ex.getErrorMessage());
-			if (wedgeCount >= WEDGE_LIMIT) {
-				debug("[pump] link wedged after " + wedgeCount + " refusals, reconnecting");
-				wedgeCount = 0;
-				linkLost();
+			if (!refusedThisTick) {
+				refusedThisTick = true;
+				wedgeCount++;
+				if (wedgeCount >= WEDGE_LIMIT) {
+					debug("[pump] link wedged for " + wedgeCount + " ticks, reconnecting");
+					linkLost();
+				}
 			}
 		}
 	}
@@ -550,6 +542,8 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 		queueKind = [];
 		writing = false;
 		wedgeCount = 0;
+		refusedThisTick = false;
+		optPending = null;
 		rxBuf = null;
 		photoSeq = -1; lapseSeq = -1; optSeq = -1; capSeq = -1; storSeq = -1; setSeq = -1;
 	}
@@ -633,12 +627,15 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 				syncOnConnect = false;
 				var id = (st > 0) ? modeForCaptureState(st) : null;
 				if (id != null) {
-					// camera is already capturing: follow it. Its elapsed time is not readable on a
-					// watch (see recAdopted), so the timer counts from now and is marked.
+					// Camera is capturing. If the watch already knew (reconnect during its own or
+					// an adopted recording), keep its timer. Otherwise follow it: its elapsed time is
+					// not readable on a watch (see recAdopted), so the timer counts from now, marked.
 					adoptMode(id);
-					recStarted(true);
+					if (recState != stateStartRec) { recStarted(true); }
 				} else {
 					// camera idle: make it match the mode the watch shows
+					if (recState != stateStarting) { recState = stateStopRec; }
+					recAdopted = false;
 					ensureX5Mode();
 					$.sendCurrentMode(self);
 				}
@@ -678,6 +675,9 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 				if (t[i][0] == 2) { vi = t[i][2].toNumber(); }
 			}
 			var id = (ph != 100) ? "p" + ph : ((vi != 100) ? "v" + vi : null);
+			// a 0x2065 just before or after this push belongs to the mode change
+			lastModePushMs = System.getTimer();
+			optPending = null;
 			debug("[mode] camera says photo=" + ph + " video=" + vi + " -> " + id);
 			if (id != null && modeReq != null && id.equals(modeReq)) {
 				modeReq = null;      // our latest request confirmed; the hold runs out by itself
@@ -718,11 +718,22 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 	// values and the function mode are lost. Pushed after a setting is changed on the camera, and
 	// also right after a mode change and possibly after the watch's own writes: those echoes (the
 	// watch knows what it sent) are skipped.
-	var lastSetMs = null;   // System.getTimer() of the watch's last settings write
+	//
+	// A mode change (also one made on the camera) sends 0x2065 with the new mode's stored values
+	// right before or after its 0x2053; nothing changed then. A cut push is therefore held for
+	// OPT_SETTLE_MS and dropped if a 0x2053 comes within that time on either side.
+	const OPT_SETTLE_MS = 1500;
+	var lastSetMs = null;        // System.getTimer() of the watch's last settings write
+	var lastModePushMs = null;   // System.getTimer() of the last 0x2053
+	var optPending = null;       // [option types, arrival ms] of a cut push waiting to settle
 	function onSettingPushX5(f, body, total) {
 		var now = System.getTimer();
 		if (setSeq >= 0 || now < modeHoldUntil || (lastSetMs != null && now - lastSetMs < 3000)) {
 			debug("[opt] camera push after our own change, ignored");
+			return;
+		}
+		if (lastModePushMs != null && now - lastModePushMs < OPT_SETTLE_MS) {
+			debug("[opt] camera push with a mode change, ignored");
 			return;
 		}
 		var whole = f.size() >= total;   // a cut varint would read as a wrong value
@@ -738,10 +749,23 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 				for (var j = 0; j < o.size(); j++) { if (o[j][1] == 0) { vals[o[j][0]] = o[j][2].toNumber(); } }
 			}
 		}
-		debug("[opt] camera changed " + types + (whole ? " fm=" + fm + " " + vals : " (cut: value unknown)"));
-		for (var i = 0; i < types.size(); i++) {
-			Settings.cameraChanged(types[i], fm, whole ? vals.get(types[i]) : null);
+		if (!whole) {
+			debug("[opt] camera changed " + types + " (cut: value unknown), settling");
+			optPending = [types, now];
+			return;
 		}
+		debug("[opt] camera changed " + types + " fm=" + fm + " " + vals);
+		for (var i = 0; i < types.size(); i++) { Settings.cameraChanged(types[i], fm, vals.get(types[i])); }
+		WatchUi.requestUpdate();
+	}
+
+	// Apply a cut 0x2065 once no mode change came with it (called every keep-alive tick).
+	function flushSettingPush(now) {
+		if (optPending == null || now - optPending[1] < OPT_SETTLE_MS) { return; }
+		var types = optPending[0];
+		optPending = null;
+		debug("[opt] " + types + " -> unknown");
+		for (var i = 0; i < types.size(); i++) { Settings.cameraChanged(types[i], null, null); }
 		WatchUi.requestUpdate();
 	}
 
@@ -804,7 +828,6 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 	}
 
 	function onCharacteristicChanged(ch, value) {
-		if (!isX5() && x5OnlyFrame(value)) { promoteX5(); }
 		if (isX5()) { reassembleX5(value); }
 		if (LOG_FRAMES && value.size() != 7) { debug("[rx] " + value.size() + "b " + hex(value, 40)); } // skip 1 Hz keep-alives
 		// X5 response: [len u32][04 00 00][code u16][02][seq u24][80|f4][00 00]
@@ -978,6 +1001,10 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 	// the old pairing, so the system does not reconnect it while we scan and pair again, then scan.
 	// Safe to run twice (unpairing also produces a disconnect event).
 	function linkLost() {
+		// A start / stop still waiting for the camera may never have reached it (the queue is
+		// cleared): show the state before the press; the connect sync then shows the real one.
+		if (recState == stateStarting) { recState = stateStopRec; }
+		else if (recState == stateStopping) { recState = stateStartRec; }
 		resetLink();
 		if (device != null) {
 			try { BluetoothLowEnergy.unpairDevice(device); } catch (ex) { debug("[link] unpair: " + ex.getErrorMessage()); }
@@ -1027,16 +1054,6 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 		queryStorageX5();
 	}
 
-	// An X5-only frame arrived while the name did not say X5: switch to X5 handling for the rest
-	// of the run, and start the X5 session if the connect path skipped it.
-	function promoteX5() {
-		x5Proto = true;
-		menuLevel = 2;
-		debug("[model] X5 frame from " + deviceName + ": switching to X5");
-		if (device != null && !linkReady) { startX5(); }
-		WatchUi.requestUpdate();
-	}
-
 	// Queue a pre-built frame (no sequence rewrite) and kick the write chain.
 	function sendRaw(frame) {
 		if (device == null) { return; }
@@ -1048,6 +1065,8 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 	// Called every 2 s by the view. Sends a keep-alive only when nothing else is queued,
 	// and recovers if a write callback never came back.
 	function keepAlive() {
+		refusedThisTick = false;
+		flushSettingPush(System.getTimer());
 		if (device == null) { return; }
 		if (isX5() && !linkReady) {
 			// services may not have been discovered at connect time: retry the CCCD write
@@ -1104,19 +1123,12 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 		debug("[photo] TAKE_PICTURE seq=" + SeqNo);
 	}
 
-	// The camera we connect to: its name sets the menu level and the model. A name that says
-	// neither X5 nor a known older camera keeps the model proven earlier in this run (the same
-	// camera reconnecting with a different advertisement); an X5-only frame still promotes it.
+	// The camera we connect to: its name decides the model and the legacy menu level.
 	function adoptName(name) {
 		deviceName = name;
-		var p = name.length() >= 3 ? name.substring(0, 3) : name;
-		menuLevel = 0;
-		if (p.equals("ONE") || p.equals("X3 ")) { menuLevel = 1; }
-		if (p.equals("X4 ")) { menuLevel = 2; }
-		if (nameIsX5(name)) { x5Proto = true; }
-		else if (nameIsLegacy(name)) { x5Proto = false; }
-		if (x5Proto) { menuLevel = 2; }
-		debug("[model] " + name + (isX5() ? " (X5)" : ""));
+		var lvl = legacyLevel(name);
+		menuLevel = (lvl == null) ? 2 : lvl;
+		debug("[model] " + name + (isX5() ? " (X5)" : " (legacy)"));
 	}
 
 	private function connect(result) {
@@ -1156,7 +1168,7 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 			uuids = result.getServiceUuids();
 			// Only the camera we connect to names the model: other devices in range must not.
 			var name = result.getDeviceName();
-			if (LOG_FRAMES && nameIsX5(name)) {
+			if (LOG_FRAMES && name != null && legacyLevel(name) == null) {
 				var raw = result.getRawData();
 				if (raw != null) { debug("[adv] " + hex(raw, 40)); }
 			}
@@ -1393,6 +1405,7 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 		// debug("open");
 		// Load last state of app
 		recState = Storage.getValue("recState");
+		recAdopted = Storage.getValue("recAdopted") == true;
 		if (recState == null) {
 			recState = stateStopRec;
 		}
@@ -1437,6 +1450,7 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 		// Save current state of app 
 		Storage.setValue("recState", recState);
 		Storage.setValue("startRecTime", startRecTime.value());
+		Storage.setValue("recAdopted", recAdopted);
 		Storage.setValue("currentMode", toStore(currentMode));
 		Storage.setValue("currentLabel", currentLabel);
 		Storage.setValue("cmdStartRec", toStore(cmdStartRec));

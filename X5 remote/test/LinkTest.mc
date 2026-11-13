@@ -19,33 +19,63 @@ function resetQueue() {
 	BLEBarrel.queueKind = [];
 }
 
-// Refused writes are counted; an accepted write clears the streak; the fourth refusal in a row
-// drops the link (device released, queue cleared, rescan) instead of retrying forever.
+// Shared module state the tests change: put it back so the next test starts clean.
+function resetTestState(d) {
+	resetQueue();
+	BLEBarrel.deviceName = "X5 1ABCDE"; BLEBarrel.menuLevel = 2;
+	BLEBarrel.currentMode = "v0"; BLEBarrel.currentLabel = "Video"; BLEBarrel.videoMode = true;
+	BLEBarrel.recState = BLEBarrel.stateStopRec; BLEBarrel.recAdopted = false;
+	BLEBarrel.modeReq = null; BLEBarrel.modeHoldUntil = 0;
+	BLEBarrel.photoSeq = -1; BLEBarrel.lapseSeq = -1;
+	Settings.vals = {}; Settings.acked = {};
+	if (d != null) {
+		d.device = null; d.lastSetMs = null; d.lastModePushMs = null; d.optPending = null;
+		if (d.scanning) {
+			d.scanning = false;
+			try { Toybox.BluetoothLowEnergy.setScanState(Toybox.BluetoothLowEnergy.SCAN_STATE_OFF); } catch (ex) { }
+		}
+	}
+}
+
+// A burst of refusals within one keep-alive tick (session start, settings) counts once; an
+// accepted write clears the streak; refusals on the fourth tick in a row drop the link (device
+// released, queue cleared, rescan). A START still waiting when the link drops is undone, so the
+// UI does not wait for a confirmation that cannot come.
 (:test)
 function pumpRefusalsDropWedgedLink(logger) {
-	resetQueue();
 	var d = new RefusingBle();
+	resetTestState(d);
 	d.device = {};   // stand-in: only compared with null by pump()
 	BLEBarrel.queueFrame(BLEBarrel.frameX5(0x05, []b));
-	d.pump(); d.pump(); d.pump();
+	for (var i = 0; i < 6; i++) { d.pump(); }          // one tick, many refusals
+	var burst = d.wedgeCount == 1 && d.device != null;
+	d.refusedThisTick = false; d.pump();
+	d.refusedThisTick = false; d.pump();
 	var three = d.wedgeCount == 3 && d.device != null && BLEBarrel.queue.size() == 1;
 	d.refuse = false;
 	d.pump();
 	var cleared = d.wedgeCount == 0 && d.writes == 1 && BLEBarrel.queue.size() == 0;
 	d.writing = false; d.refuse = true;
-	BLEBarrel.queueFrame(BLEBarrel.frameX5(0x05, []b));
-	for (var i = 0; i < 4; i++) { d.pump(); }
-	logger.debug("three=" + three + " cleared=" + cleared + " device=" + d.device + " q=" + BLEBarrel.queue.size() + " scanning=" + d.scanning);
-	var dropped = d.device == null && BLEBarrel.queue.size() == 0 && d.wedgeCount == 0 && d.scanning;
-	d.scanning = false;
-	return three && cleared && dropped;
+	BLEBarrel.recState = BLEBarrel.stateStarting;      // user pressed START
+	BLEBarrel.queueFrame(BLEBarrel.frameX5(0x04, [0x08, 0x01]b));
+	for (var i = 0; i < 4; i++) { d.refusedThisTick = false; d.pump(); d.pump(); }
+	logger.debug("burst=" + burst + " three=" + three + " cleared=" + cleared + " device=" + d.device
+		+ " q=" + BLEBarrel.queue.size() + " scanning=" + d.scanning + " rec=" + BLEBarrel.recState);
+	var dropped = d.device == null && BLEBarrel.queue.size() == 0 && d.wedgeCount == 0 && d.scanning
+		&& BLEBarrel.recState == BLEBarrel.stateStopRec;
+	// a STOP waiting when the link drops: back to recording until the connect sync says otherwise
+	BLEBarrel.recState = BLEBarrel.stateStopping;
+	d.linkLost();
+	var stopUndone = BLEBarrel.recState == BLEBarrel.stateStartRec;
+	resetTestState(d);
+	return burst && three && cleared && dropped && stopUndone;
 }
 
 // A backed-up queue drops GPS telemetry and keep-alives, never a user command, and never the
 // rest of a frame whose first chunk already left.
 (:test)
 function queueBoundKeepsUserCommands(logger) {
-	resetQueue();
+	resetTestState(null);
 	var tele = new [71]b; tele[7] = 0x35; tele[8] = 0;   // legacy GPS telemetry: 4 chunks
 	var stop = BLEBarrel.frameX5(0x05, []b);             // STOP_CAPTURE
 	// head: the last two chunks of a telemetry frame already being sent
@@ -68,41 +98,26 @@ function queueBoundKeepsUserCommands(logger) {
 	resetQueue();
 	for (var i = 0; i < 20; i++) { BLEBarrel.queueFrame(stop); }
 	var allKept = BLEBarrel.queue.size() == 20;
-	resetQueue();
+	resetTestState(null);
 	return n <= BLEBarrel.QUEUE_CAP && keep == 2 && headKept && stopAt2 && lastIsStart && drops % 4 == 0 && allKept;
 }
 
-class StartCountingBle extends BLEBarrel.BleDevice {
-	var starts = 0;
-	function initialize() { BleDevice.initialize(); }
-	function startX5() { starts++; linkReady = true; }
-}
-
-// The advertised name did not say X5 (missing / unexpected): a real 0x2053 push from the watch
-// log switches the app to X5 handling, starts the X5 session that the connect path skipped, and
-// the push itself is applied. A frame both generations send (0x2010) does not switch.
+// The model comes from the connected camera's name: older cameras' names get the legacy protocol,
+// any other name the X5 protocol; a different camera gets its own verdict.
 (:test)
-function x5OnlyFramePromotes(logger) {
-	var d = new StartCountingBle();
-	BLEBarrel.x5Proto = false;
-	BLEBarrel.deviceName = "Insta360 cam";
-	d.device = {};   // connected; only compared with null here
-	d.linkReady = false;
-	BLEBarrel.recState = BLEBarrel.stateStopRec;
-	BLEBarrel.modeReq = null; BLEBarrel.modeHoldUntil = 0;
-	BLEBarrel.currentMode = "DefaultV"; BLEBarrel.currentLabel = "Default Video";
-	d.onCharacteristicChanged(null, [0x14, 0, 0, 0, 0x04, 0, 0, 0x10, 0x20, 0x02, 0xff, 0, 0, 0x80, 0, 0, 0x08, 0x00, 0x10, 0x06]b);
-	var notYet = !BLEBarrel.isX5() && d.starts == 0;
-	d.onCharacteristicChanged(null, [0x16, 0, 0, 0, 0x04, 0, 0, 0x53, 0x20, 0x02, 0xff, 0x8a, 0x43, 0xf4, 0, 0, 0x08, 0x03, 0x10, 0x64]b);
-	logger.debug("notYet=" + notYet + " x5=" + BLEBarrel.isX5() + " starts=" + d.starts + " mode=" + BLEBarrel.currentMode + " menu=" + BLEBarrel.menuLevel);
-	var ok = notYet && BLEBarrel.isX5() && d.starts == 1 && BLEBarrel.currentMode.equals("p3") && BLEBarrel.menuLevel == 2;
-	// a reconnect with an unrecognised name keeps the verdict; a known older camera resets it
-	d.adoptName("Insta360 cam");
-	var kept = BLEBarrel.isX5();
-	d.adoptName("X3 ABCDEF");
-	var reset = !BLEBarrel.isX5() && BLEBarrel.menuLevel == 1;
+function modeFollowsConnectedName(logger) {
+	var d = new BLEBarrel.BleDevice();
 	d.adoptName("X5 1ABCDE");
-	BLEBarrel.x5Proto = false;
-	d.device = null;
-	return ok && kept && reset;
+	var x5 = BLEBarrel.isX5() && BLEBarrel.menuLevel == 2;
+	d.adoptName("X3 ABCDEF");
+	var x3 = !BLEBarrel.isX5() && BLEBarrel.menuLevel == 1;
+	d.adoptName("Insta360 cam");
+	var other = BLEBarrel.isX5() && BLEBarrel.menuLevel == 2;
+	d.adoptName("X4 ABCDEF");
+	var x4 = !BLEBarrel.isX5() && BLEBarrel.menuLevel == 2;
+	BLEBarrel.deviceName = "n/a";
+	var none = !BLEBarrel.isX5();
+	logger.debug("x5=" + x5 + " x3=" + x3 + " other=" + other + " x4=" + x4 + " none=" + none);
+	resetTestState(d);
+	return x5 && x3 && other && x4 && none;
 }

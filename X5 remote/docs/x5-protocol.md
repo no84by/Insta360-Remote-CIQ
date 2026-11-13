@@ -247,7 +247,7 @@ cameras): trust the catalog strings (`3840_2160_60`) over enum names.
 
 Notification `0x2065` (CAMERA_NOTIFICATION_WATCH_RES) pushes PhotographyOptions changes:
 `{1: [types], 2: {type: value}, 3: function mode}`, 26–30 bytes. It is sent after a change on the
-camera's screen and also right after a mode change, e.g. `{1:[30,40], 2:{30:0,40:12}, 3:6}`. On a
+camera's screen and also next to the `0x2053` of a mode change (seen just before it), e.g. `{1:[30,40], 2:{30:0,40:12}, 3:6}`. On a
 watch it is cut at 20 bytes: the body keeps `08 <type>` (one or two types), the values and the
 function mode are lost (`08 1f 12 04` for `{1:[31], 2:{31:252}, 3:7}`). A watch learns *which*
 option changed, never its new value.
@@ -405,8 +405,8 @@ camera values on a watch (power source, low battery, card state, capture state, 
 need authorization (§2.2). The one-byte heads of two replies still cross: the capture state of
 `GET_CURRENT_CAPTURE_STATUS` and the card state of `GET_STORAGE 08 00`, both the first field of
 the first block. The same holds for identity:
-`CAMERA_TYPE` ("Insta360 X5", 34 B) is cut before the name, so a watch recognises the X5 by its
-advertised name or by an X5-only push (`0x2053`, `0x2011`, `0x2065`).
+`CAMERA_TYPE` ("Insta360 X5", 34 B) is cut before the name, so a watch can only recognise the X5 by
+its advertised name (pushes start only after the X5 session start, §2.2).
 
 | Readable on Connect IQ (≤ 20 B) | Cut off (> 20 B) |
 |---|---|
