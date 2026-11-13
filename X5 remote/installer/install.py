@@ -505,14 +505,18 @@ class Mtp:
     def entries(self, dev, sid, parent) -> list:
         """(id, parent, name, is_folder, size) of a folder's children."""
         out = []
+        # Read the whole list before freeing anything: a ctypes pointer field read from a struct
+        # still points into that struct's memory, so freeing an item first loses the rest of the list.
+        items = []
         f = self.lib.LIBMTP_Get_Files_And_Folders(dev, sid, parent)
         while f:
             e = f.contents
             out.append((e.item_id, e.parent_id, (e.filename or b"").decode("utf-8", "replace"),
                         e.filetype == 0, e.filesize))
-            nxt = e.next
+            items.append(f)
+            f = e.next
+        for f in items:
             self.lib.LIBMTP_destroy_file_t(f)
-            f = nxt
         return out
 
 
