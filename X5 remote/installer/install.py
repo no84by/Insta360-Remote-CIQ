@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -38,7 +39,16 @@ DEVICE = "descentmk351mm"
 TARGET = "INSTAREM.PRG"          # file name on the watch
 GARMIN_VID = 0x091E
 ROOT = 0xFFFFFFFF                # libmtp: parent id of the storage root
+# Files in GARMIN/Apps that are this app: an older INSTAREM.PRG, or a copy installed by hand under
+# the release file name (two copies of one app confuse the watch). Used by every copy method,
+# also as the PowerShell filter on Windows (.NET regex, same syntax).
+STALE_RE = r"(?:INSTAREM\.PRG|insta360-x5-remote.*\.prg)"
+PRG_RE = r"insta360-x5-remote-(\d+(?:\.\d+)*)-" + DEVICE + r"\.prg"
+OPEN_FAILS = 3                   # failed opens of a present watch before "another program uses it"
 UNPLUG_HINT = "If nothing happens, unplug the watch and plug it in again."
+BUSY_MSG = ("The watch is connected but another program is using it. Quit Garmin Express and any "
+            "other app that reads the watch (an MTP app or file manager window), unplug the watch, "
+            "plug it in again and start this installer again.")
 
 
 class InstallError(Exception):
@@ -49,12 +59,22 @@ def say(msg: str = "") -> None:
     print(msg, flush=True)
 
 
-# --- release selection and verification -------------------------------------------------------
+# --- versions, release selection and verification ----------------------------------------------
+
+def parse_version(text: str, pattern: str) -> tuple:
+    """Version tuple from `text` when it matches `pattern` (one group: 1.2.3), else ()."""
+    m = re.fullmatch(pattern, text or "", re.I)
+    return tuple(int(p) for p in m.group(1).split(".")) if m else ()
+
 
 def version_key(tag: str) -> tuple:
-    """x5-remote-v1.1.4 -> (1, 1, 4); anything else sorts first."""
-    m = re.fullmatch(re.escape(TAG_PREFIX) + r"(\d+(?:\.\d+)*)", tag or "")
-    return tuple(int(p) for p in m.group(1).split(".")) if m else ()
+    """x5-remote-v1.1.4 -> (1, 1, 4); anything else -> ()."""
+    return parse_version(tag, re.escape(TAG_PREFIX) + r"(\d+(?:\.\d+)*)")
+
+
+def prg_version(name: str) -> tuple:
+    """insta360-x5-remote-1.1.4-descentmk351mm.prg -> (1, 1, 4); other files (other watches) -> ()."""
+    return parse_version(name, PRG_RE)
 
 
 def pick_release(releases: list) -> tuple[str, dict, dict] | None:
@@ -69,7 +89,7 @@ def pick_release(releases: list) -> tuple[str, dict, dict] | None:
         if not key or rel.get("draft"):
             continue
         assets = rel.get("assets") or []
-        prg = next((a for a in assets if a.get("name", "").endswith(f"-{DEVICE}.prg")), None)
+        prg = next((a for a in assets if prg_version(a.get("name", ""))), None)
         sums = next((a for a in assets if a.get("name") == "SHA256SUMS"), None)
         if prg and sums and (best is None or key > best[0]):
             best = (key, rel["tag_name"], prg, sums)
@@ -90,8 +110,7 @@ def verify(data: bytes, name: str, sums: dict) -> None:
     want = sums.get(name)
     if not want:
         raise InstallError(f"{name} is not listed in SHA256SUMS; not installing it.")
-    got = hashlib.sha256(data).hexdigest()
-    if got != want:
+    if hashlib.sha256(data).hexdigest() != want:
         raise InstallError(f"{name} does not match its checksum (download damaged?); not installing it.")
 
 
@@ -114,37 +133,49 @@ def _fetch(url: str, timeout: int = 30) -> bytes:
 def download_latest(dest: Path) -> Path:
     say("Looking for the newest X5 Remote release on GitHub...")
     try:
-        releases = json.loads(_fetch(f"https://api.github.com/repos/{REPO}/releases?per_page=50"))
-    except Exception as e:
-        raise InstallError(f"Could not reach GitHub ({e.__class__.__name__}). Check the internet connection, "
-                           "or put the .prg file from the release next to this installer and start again.")
-    pick = pick_release(releases)
-    if not pick:
-        raise InstallError("No X5 Remote release with a file for the Descent Mk3i 51 mm was found.")
-    tag, prg, sums = pick
-    say(f"Downloading {prg['name']} ({tag})...")
-    data = _fetch(prg["browser_download_url"], timeout=60)
-    verify(data, prg["name"], parse_sums(_fetch(sums["browser_download_url"]).decode("utf-8", "replace")))
+        pick = pick_release(json.loads(_fetch(f"https://api.github.com/repos/{REPO}/releases?per_page=50")))
+        if not pick:
+            raise InstallError("No X5 Remote release with a file for the Descent Mk3i 51 mm was found.")
+        tag, prg, sums = pick
+        say(f"Downloading {prg['name']} ({tag})...")
+        data = _fetch(prg["browser_download_url"], timeout=60)
+        verify(data, prg["name"], parse_sums(_fetch(sums["browser_download_url"]).decode("utf-8", "replace")))
+        out = dest / prg["name"]
+        out.write_bytes(data)
+    except InstallError:
+        raise
+    except Exception as e:  # offline, timeout, rate limit, bad answer, disk full
+        raise InstallError(f"Could not download the app from GitHub ({e.__class__.__name__}). Check the "
+                           "internet connection and start again, or put the .prg and SHA256SUMS from the "
+                           "release next to this installer.")
     say("Download checked (SHA-256 matches the release).")
-    out = dest / prg["name"]
-    out.write_bytes(data)
     return out
 
 
 def local_prg(here: Path) -> Path | None:
-    """A .prg for the watch next to the installer (offline use); the newest name wins."""
-    found = sorted(here.glob(f"*{DEVICE}*.prg")) or sorted(here.glob("*.prg"))
-    return found[-1] if found else None
+    """The newest release .prg for the Descent Mk3i 51 mm next to the installer (offline use)."""
+    found = [p for p in here.glob("*.prg") if prg_version(p.name)]
+    return max(found, key=lambda p: prg_version(p.name)) if found else None
 
 
 def check_local(prg: Path) -> None:
-    """Verify a local .prg against a SHA256SUMS next to it, when there is one."""
+    """Verify a local .prg against a SHA256SUMS next to it; warn when there is none."""
     sums_file = prg.parent / "SHA256SUMS"
     if not sums_file.exists():
-        say(f"Using {prg.name} (no SHA256SUMS next to it, so it is not checked).")
+        say(f"Warning: no SHA256SUMS next to {prg.name}, so the file cannot be checked. Installing it anyway.")
         return
     verify(prg.read_bytes(), prg.name, parse_sums(sums_file.read_text("utf-8", "replace")))
     say(f"Using {prg.name} (SHA-256 matches SHA256SUMS).")
+
+
+def parse_wait(text: str) -> int:
+    try:
+        v = int(text)
+    except (TypeError, ValueError):
+        v = 0
+    if v <= 0:
+        raise InstallError(f"--wait needs a number of seconds, for example --wait 300 (got {text!r}).")
+    return v
 
 
 # --- the watch's folders -----------------------------------------------------------------------
@@ -159,9 +190,16 @@ def find_apps(entries: list) -> int | None:
 
 
 def stale_names(names: list) -> list:
-    """Files in Apps to remove before copying: an older INSTAREM.PRG, and copies installed by hand
-    under the release file name (two copies of one app confuse the watch)."""
-    return [n for n in names if n.upper() == TARGET or re.fullmatch(r"insta360-x5-remote.*\.prg", n, re.I)]
+    return [n for n in names if re.fullmatch(STALE_RE, n, re.I)]
+
+
+def check_copies(sizes: list, size: int) -> None:
+    """Sizes of every INSTAREM.PRG in Apps after the copy: exactly one, of the right size."""
+    if len(sizes) != 1:
+        raise InstallError(f"Found {len(sizes)} copies of {TARGET} on the watch instead of one. "
+                           "Unplug and plug in the watch, and start again.")
+    if sizes[0] != size:
+        raise InstallError("The copy on the watch does not have the right size. Start again.")
 
 
 def methods_for(platform: str) -> list:
@@ -173,87 +211,136 @@ def methods_for(platform: str) -> list:
     return ["gio", "libmtp"]
 
 
+def wait_for(probe, wait_s: int, hint: str, clock=time.monotonic, sleep=time.sleep):
+    """Call probe() every 2 s until it returns something (returned) or wait_s passes (InstallError).
+    probe may raise InstallError to stop early."""
+    t0 = clock()
+    shown = -1
+    while True:
+        got = probe()
+        if got:
+            return got
+        waited = int(clock() - t0)
+        if waited >= wait_s:
+            raise InstallError(f"The watch did not show up. {hint}")
+        if waited // 15 != shown:
+            shown = waited // 15
+            say(f"  Waiting for the watch... ({waited} s)")
+        sleep(2)
+
+
+def ask_plug(wait_s: int) -> None:
+    say("Plug the watch into this computer with its USB cable now.")
+    say(f"Waiting for the watch (up to {max(1, wait_s // 60)} minutes; after plugging in it can take a minute "
+        f"or more before it is ready). {UNPLUG_HINT}")
+
+
 # --- Windows: the Shell's view of the watch (no extra software) ---------------------------------
 
 def ps_quote(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
-def windows_script(src: str, size: int, wait_s: int) -> str:
-    """PowerShell that waits for the watch, moves older copies out of Apps (into a backup folder:
-    the Shell has no silent delete for a phone-like device), copies INSTAREM.PRG and waits until
-    the copy has the right size. Lines starting with OK / ERR end it."""
-    backup = os.path.join(tempfile.gettempdir(), "x5-remote-old-app")
-    return f"""
-$ErrorActionPreference = 'Stop'
-$src = {ps_quote(src)}; $name = {ps_quote(TARGET)}; $size = {size}; $wait = {wait_s}
-$backup = {ps_quote(backup)}
+PS_FIND = r"""
 $sh = New-Object -ComObject Shell.Application
-function Child($f, $n) {{ foreach ($i in @($f.Items())) {{ if ($i.IsFolder -and $i.Name -ieq $n) {{ return $i.GetFolder }} }}; return $null }}
-function FindApps {{
-  foreach ($dev in @($sh.NameSpace(17).Items())) {{
-    if ($dev.IsFileSystem) {{ continue }}
-    $df = $null; try {{ $df = $dev.GetFolder }} catch {{}}
-    if ($df -eq $null) {{ continue }}
-    foreach ($st in @($df.Items())) {{
-      $sf = $null; try {{ $sf = $st.GetFolder }} catch {{}}
-      if ($sf -eq $null) {{ continue }}
-      $g = Child $sf 'GARMIN'; if ($g -eq $null) {{ continue }}
-      $a = Child $g 'Apps'; if ($a -ne $null) {{ return $a }}
-    }}
-  }}
+function Child($f, $n) { foreach ($i in @($f.Items())) { if ($i.IsFolder -and $i.Name -ieq $n) { return $i.GetFolder } }; return $null }
+function FindApps {
+  foreach ($dev in @($sh.NameSpace(17).Items())) {
+    if ($dev.IsFileSystem) { continue }
+    $df = $null; try { $df = $dev.GetFolder } catch {}
+    if ($df -eq $null) { continue }
+    foreach ($st in @($df.Items())) {
+      $sf = $null; try { $sf = $st.GetFolder } catch {}
+      if ($sf -eq $null) { continue }
+      $g = Child $sf 'GARMIN'; if ($g -eq $null) { continue }
+      $a = Child $g 'Apps'; if ($a -ne $null) { return $a }
+    }
+  }
   return $null
+}
+# The Shell may hide the extension of a name: test the name with and without .prg.
+function Is($n, $re) { return ($n -imatch $re) -or (($n + '.prg') -imatch $re) }
+"""
+
+
+def windows_probe_script() -> str:
+    return PS_FIND + "if ((FindApps) -ne $null) { Write-Output 'FOUND'; exit 0 } else { exit 2 }\n"
+
+
+def windows_script(src: str, size: int) -> str:
+    """PowerShell, run once the watch is there: moves older copies out of Apps (into a backup folder:
+    the Shell has no silent delete for a phone-like device), copies INSTAREM.PRG and waits until the
+    copy is there. Lines starting with OK / ERR end it."""
+    backup = os.path.join(tempfile.gettempdir(), "x5-remote-old-app")
+    return PS_FIND + f"""
+$ErrorActionPreference = 'Stop'
+$src = {ps_quote(src)}; $size = {size}; $backup = {ps_quote(backup)}
+$stale = {ps_quote('^' + STALE_RE + '$')}; $target = {ps_quote('^' + re.escape(TARGET) + '$')}
+function Stale {{ @((FindApps).Items()) | Where-Object {{ Is $_.Name $stale }} }}
+function Copies {{ @((FindApps).Items()) | Where-Object {{ Is $_.Name $target }} }}
+function SizeOf($it) {{
+  $s = $null; try {{ $s = $it.ExtendedProperty('System.Size') }} catch {{}}
+  if ($s -eq $null) {{ try {{ $s = $it.Size }} catch {{}} }}
+  return $s
 }}
-function Stale($a) {{ @($a.Items()) | Where-Object {{ $_.Name -ieq $name -or $_.Name -ieq 'INSTAREM' -or $_.Name -like 'insta360-x5-remote*' }} }}
-$t0 = Get-Date; $apps = $null; $last = -1
-while ($apps -eq $null) {{
-  $apps = FindApps
-  if ($apps -ne $null) {{ break }}
-  $s = [int]((Get-Date) - $t0).TotalSeconds
-  if ($s -ge $wait) {{ Write-Output 'ERR: The watch did not show up.'; exit 3 }}
-  if ([int]($s / 15) -ne $last) {{ $last = [int]($s / 15); Write-Output "STATUS: Waiting for the watch... ($s s)" }}
-  Start-Sleep -Seconds 2
-}}
-Write-Output 'STATUS: Watch found.'
-$old = @(Stale $apps)
+if ((FindApps) -eq $null) {{ Write-Output 'ERR: The watch is gone.'; exit 3 }}
+$old = @(Stale)
 if ($old.Count -gt 0) {{
   New-Item -ItemType Directory -Force -Path $backup | Out-Null
   $bf = $sh.NameSpace($backup)
   foreach ($o in $old) {{ Write-Output "STATUS: Moving the older copy $($o.Name) off the watch"; $bf.MoveHere($o, 4 + 16 + 1024) }}
-  for ($i = 0; $i -lt 60 -and @(Stale (FindApps)).Count -gt 0; $i++) {{ Start-Sleep -Seconds 1 }}
-  if (@(Stale (FindApps)).Count -gt 0) {{ Write-Output 'ERR: Could not remove the older copy from GARMIN\\Apps.'; exit 4 }}
+  for ($i = 0; $i -lt 60 -and @(Stale).Count -gt 0; $i++) {{ Start-Sleep -Seconds 1 }}
+  if (@(Stale).Count -gt 0) {{ Write-Output 'ERR: Could not remove the older copy from GARMIN\\Apps.'; exit 4 }}
 }}
 Write-Output 'STATUS: Copying the app to the watch...'
-$apps.CopyHere($src, 4 + 16 + 1024)
+(FindApps).CopyHere($src, 4 + 16 + 1024)
+$seen = $null
 for ($i = 0; $i -lt 120; $i++) {{
   Start-Sleep -Seconds 1
-  $it = $null; try {{ $it = (FindApps).ParseName($name) }} catch {{}}
-  if ($it -ne $null -and [int64]$it.ExtendedProperty('System.Size') -eq $size) {{ Write-Output "OK: $size bytes on the watch"; exit 0 }}
+  $c = @(Copies)
+  if ($c.Count -gt 1) {{ Write-Output "ERR: $($c.Count) copies of the app on the watch."; exit 6 }}
+  if ($c.Count -eq 1) {{
+    $s = SizeOf $c[0]
+    if ($s -ne $null -and [int64]$s -eq $size) {{ Write-Output "OK: $size bytes on the watch"; exit 0 }}
+    if ($s -eq $null) {{
+      if ($seen -eq $null) {{ $seen = $i }}
+      if ($i - $seen -ge 10) {{ Write-Output 'OK: copied (size not reported by Windows)'; exit 0 }}
+    }}
+  }}
 }}
 Write-Output 'ERR: The copy did not complete.'; exit 5
 """
 
 
-def copy_windows(prg: Path, wait_s: int) -> None:
-    stage = Path(tempfile.mkdtemp(prefix="x5-remote-"))
-    src = stage / TARGET                      # the Shell copies under the source file's name
-    shutil.copyfile(prg, src)
-    script = windows_script(str(src), src.stat().st_size, wait_s)
+def run_ps(script: str, stream: bool = False) -> tuple[int, list]:
     enc = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-    say("Plug the watch into this computer with its USB cable now.")
-    say(f"Waiting for the watch (up to {wait_s // 60} minutes; this can take a while). {UNPLUG_HINT}")
-    p = subprocess.Popen(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                          "-EncodedCommand", enc], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    result = None
+    cmd = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", enc]
+    if not stream:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        return r.returncode, r.stdout.splitlines()
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    lines = []
     for line in p.stdout:
         line = line.strip()
+        lines.append(line)
         if line.startswith(("STATUS: ", "OK: ", "ERR: ")):
             say("  " + line.split(": ", 1)[1])
-            if not line.startswith("STATUS"):
-                result = line
-    p.wait()
-    shutil.rmtree(stage, ignore_errors=True)
-    if p.returncode != 0 or not (result or "").startswith("OK"):
+    return p.wait(), lines
+
+
+def copy_windows(prg: Path, wait_s: int) -> None:
+    ask_plug(wait_s)
+    wait_for(lambda: run_ps(windows_probe_script())[0] == 0, wait_s,
+             f"Close Garmin Express if it is open. {UNPLUG_HINT}")
+    say("  Watch found.")
+    stage = Path(tempfile.mkdtemp(prefix="x5-remote-"))
+    try:
+        src = stage / TARGET                      # the Shell copies under the source file's name
+        shutil.copyfile(prg, src)
+        code, lines = run_ps(windows_script(str(src), src.stat().st_size), stream=True)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    if code != 0 or not any(x.startswith("OK: ") for x in lines):
         raise InstallError("Copying to the watch did not work. Close Garmin Express if it is open, "
                            "unplug and plug in the watch, and start again.")
 
@@ -262,56 +349,66 @@ def copy_windows(prg: Path, wait_s: int) -> None:
 
 def gio_roots(mount_list: str) -> list:
     """mtp:// roots from `gio mount -li` output (mounted or not yet)."""
-    roots = re.findall(r"(mtp://[^\s]+?/?)(?=\s|$)", mount_list)
     out = []
-    for r in roots:
+    for r in re.findall(r"(mtp://[^\s]+?/?)(?=\s|$)", mount_list):
         r = r if r.endswith("/") else r + "/"
         if r not in out:
             out.append(r)
     return out
 
 
+def uri_child(uris: list, name: str) -> str | None:
+    """From `gio list -u` URIs, the one whose last part is `name` (case-insensitive)."""
+    for u in uris:
+        if urllib.parse.unquote(u.rstrip("/").rsplit("/", 1)[-1]).upper() == name.upper():
+            return u.rstrip("/") + "/"
+    return None
+
+
 def _gio(*args, timeout=60) -> subprocess.CompletedProcess:
     return subprocess.run(["gio", *args], capture_output=True, text=True, timeout=timeout)
 
 
-def copy_gio(prg: Path, wait_s: int) -> None:
-    say("Plug the watch into this computer with its USB cable now.")
-    say(f"Waiting for the watch (up to {wait_s // 60} minutes). {UNPLUG_HINT}")
-    t0 = time.time()
-    apps = None
-    while apps is None:
-        for root in gio_roots(_gio("mount", "-li").stdout):
-            _gio("mount", root)                              # no-op when already mounted
-            for storage in _gio("list", root).stdout.split("\n"):
-                if not storage.strip():
-                    continue
-                garmin = f"{root}{storage.strip()}/GARMIN/"
-                listing = _gio("list", garmin)
-                if listing.returncode != 0:
-                    continue
-                for d in listing.stdout.split("\n"):
-                    if d.strip().upper() == "APPS":
-                        apps = f"{garmin}{d.strip()}/"
-        if apps:
-            break
-        waited = int(time.time() - t0)
-        if waited >= wait_s:
-            raise InstallError(f"The watch did not show up. {UNPLUG_HINT}")
-        if waited % 15 < 2:
-            say(f"  Waiting for the watch... ({waited} s)")
-        time.sleep(2)
-    say("  Watch found.")
-    for n in stale_names([x.strip() for x in _gio("list", apps).stdout.split("\n") if x.strip()]):
-        say(f"  Removing the older copy {n}")
-        _gio("remove", apps + n)
+def _gio_uris(uri: str) -> list:
+    r = _gio("list", "-u", uri)
+    return [x.strip() for x in r.stdout.splitlines() if x.strip()] if r.returncode == 0 else []
+
+
+def gio_apps() -> str | None:
+    """URI of GARMIN/Apps on a GVfs MTP device, or None (no device, or no MTP backend)."""
+    for root in gio_roots(_gio("mount", "-li").stdout):
+        _gio("mount", root)                              # no-op when already mounted
+        for storage in _gio_uris(root):                  # URIs: storage names are escaped
+            garmin = uri_child(_gio_uris(storage), "GARMIN")
+            apps = garmin and uri_child(_gio_uris(garmin), "Apps")
+            if apps:
+                return apps
+    return None
+
+
+def gio_has_mtp() -> bool:
+    return bool(shutil.which("gio")) and bool(gio_roots(_gio("mount", "-li").stdout))
+
+
+def copy_gio(apps: str, prg: Path) -> None:
+    for u in _gio_uris(apps):
+        name = urllib.parse.unquote(u.rstrip("/").rsplit("/", 1)[-1])
+        if stale_names([name]):
+            say(f"  Removing the older copy {name}")
+            if _gio("remove", u).returncode != 0:
+                raise InstallError(f"Could not remove the older copy {name} from the watch. Start again.")
     say("  Copying the app to the watch...")
-    r = _gio("copy", str(prg), apps + TARGET, timeout=300)
-    size = _gio("info", "-a", "standard::size", apps + TARGET).stdout
-    m = re.search(r"standard::size:\s*(\d+)", size)
-    if r.returncode != 0 or not m or int(m.group(1)) != prg.stat().st_size:
-        raise InstallError("Copying to the watch did not work: " + (r.stderr.strip() or "size check failed"))
-    say(f"  {m.group(1)} bytes on the watch.")
+    dest = apps + TARGET
+    r = _gio("copy", str(prg), dest, timeout=300)
+    if r.returncode != 0:
+        raise InstallError("Copying to the watch did not work: " + (r.stderr.strip() or "gio copy failed"))
+    sizes = []
+    for u in _gio_uris(apps):
+        if urllib.parse.unquote(u.rstrip("/").rsplit("/", 1)[-1]).upper() == TARGET:
+            m = re.search(r"standard::size:\s*(\d+)", _gio("info", "-a", "standard::size", u).stdout)
+            sizes.append(int(m.group(1)) if m else -1)
+    check_copies(sizes, prg.stat().st_size)
+    say(f"  {sizes[0]} bytes on the watch.")
 
 
 # --- macOS and Linux: libmtp through ctypes -----------------------------------------------------
@@ -363,87 +460,100 @@ def _mtp_types():
     return C, RawDevice, Device, File
 
 
-def copy_libmtp(prg: Path, wait_s: int, lib) -> None:
-    C, RawDevice, Device, File = _mtp_types()
-    lib.LIBMTP_Detect_Raw_Devices.argtypes = [C.POINTER(C.POINTER(RawDevice)), C.POINTER(C.c_int)]
-    lib.LIBMTP_Open_Raw_Device_Uncached.argtypes = [C.POINTER(RawDevice)]
-    lib.LIBMTP_Open_Raw_Device_Uncached.restype = C.POINTER(Device)
-    lib.LIBMTP_Get_Storage.argtypes = [C.POINTER(Device), C.c_int]
-    lib.LIBMTP_Get_Files_And_Folders.argtypes = [C.POINTER(Device), C.c_uint32, C.c_uint32]
-    lib.LIBMTP_Get_Files_And_Folders.restype = C.POINTER(File)
-    lib.LIBMTP_Delete_Object.argtypes = [C.POINTER(Device), C.c_uint32]
-    lib.LIBMTP_Send_File_From_File.argtypes = [C.POINTER(Device), C.c_char_p, C.POINTER(File), C.c_void_p, C.c_void_p]
-    lib.LIBMTP_Release_Device.argtypes = [C.POINTER(Device)]
-    lib.LIBMTP_Init()
+class Mtp:
+    """The few libmtp calls the installer needs. Lists libmtp returns are freed after reading."""
 
-    say("Plug the watch into this computer with its USB cable now.")
-    say(f"Waiting for the watch (up to {wait_s // 60} minutes; after plugging in it can take a minute "
-        f"or more before it is ready). {UNPLUG_HINT}")
-    t0 = time.time()
-    dev = None
-    while not dev:
-        raw = C.POINTER(RawDevice)()
+    def __init__(self, lib):
+        C, RawDevice, Device, File = _mtp_types()
+        self.C, self.RawDevice, self.Device, self.File, self.lib = C, RawDevice, Device, File, lib
+        lib.LIBMTP_Detect_Raw_Devices.argtypes = [C.POINTER(C.POINTER(RawDevice)), C.POINTER(C.c_int)]
+        lib.LIBMTP_Open_Raw_Device_Uncached.argtypes = [C.POINTER(RawDevice)]
+        lib.LIBMTP_Open_Raw_Device_Uncached.restype = C.POINTER(Device)
+        lib.LIBMTP_Get_Storage.argtypes = [C.POINTER(Device), C.c_int]
+        lib.LIBMTP_Get_Files_And_Folders.argtypes = [C.POINTER(Device), C.c_uint32, C.c_uint32]
+        lib.LIBMTP_Get_Files_And_Folders.restype = C.POINTER(File)
+        lib.LIBMTP_destroy_file_t.argtypes = [C.POINTER(File)]
+        lib.LIBMTP_Delete_Object.argtypes = [C.POINTER(Device), C.c_uint32]
+        lib.LIBMTP_Send_File_From_File.argtypes = [C.POINTER(Device), C.c_char_p, C.POINTER(File), C.c_void_p, C.c_void_p]
+        lib.LIBMTP_Release_Device.argtypes = [C.POINTER(Device)]
+        lib.LIBMTP_FreeMemory.argtypes = [C.c_void_p]
+        lib.LIBMTP_Init()
+        self.open_fails = 0
+
+    def open_watch(self):
+        """The watch's device handle, or None while it is not there. Raises InstallError when the
+        watch is on USB but cannot be opened several times in a row (another program has it)."""
+        C, lib = self.C, self.lib
+        raw = C.POINTER(self.RawDevice)()
         n = C.c_int(0)
-        if lib.LIBMTP_Detect_Raw_Devices(C.byref(raw), C.byref(n)) == 0:
+        if lib.LIBMTP_Detect_Raw_Devices(C.byref(raw), C.byref(n)) != 0:
+            return None
+        try:
             for i in range(n.value):
                 if raw[i].device_entry.vendor_id == GARMIN_VID:
                     dev = lib.LIBMTP_Open_Raw_Device_Uncached(C.byref(raw[i]))
-                    break
-        if dev:
-            break
-        waited = int(time.time() - t0)
-        if waited >= wait_s:
-            raise InstallError(f"The watch did not show up. Close Garmin Express if it is open. {UNPLUG_HINT}")
-        if waited % 15 < 2:
-            say(f"  Waiting for the watch... ({waited} s)")
-        time.sleep(2)
-    say("  Watch found.")
+                    if dev:
+                        self.open_fails = 0
+                        return dev
+                    self.open_fails += 1
+                    if self.open_fails >= OPEN_FAILS:
+                        raise InstallError(BUSY_MSG)
+        finally:
+            lib.LIBMTP_FreeMemory(raw)
+        return None
 
-    def entries(sid, parent):
+    def entries(self, dev, sid, parent) -> list:
+        """(id, parent, name, is_folder, size) of a folder's children."""
         out = []
-        f = lib.LIBMTP_Get_Files_And_Folders(dev, sid, parent)
+        f = self.lib.LIBMTP_Get_Files_And_Folders(dev, sid, parent)
         while f:
             e = f.contents
             out.append((e.item_id, e.parent_id, (e.filename or b"").decode("utf-8", "replace"),
                         e.filetype == 0, e.filesize))
-            f = e.next
+            nxt = e.next
+            self.lib.LIBMTP_destroy_file_t(f)
+            f = nxt
         return out
 
+
+def copy_libmtp(prg: Path, mtp: Mtp, dev) -> None:
+    lib, C = mtp.lib, mtp.C
     try:
         lib.LIBMTP_Get_Storage(dev, 0)
         st = dev.contents.storage
         apps = sid = None
         while st and apps is None:
             sid = st.contents.id
-            root = entries(sid, ROOT)
+            root = mtp.entries(dev, sid, ROOT)
             garmin = [e for e in root if e[3] and e[2].upper() == "GARMIN"]
-            found = root + (entries(sid, garmin[0][0]) if garmin else [])
+            found = root + (mtp.entries(dev, sid, garmin[0][0]) if garmin else [])
             apps = find_apps([e[:4] for e in found])
             st = st.contents.next
         if apps is None:
             raise InstallError("The watch has no GARMIN/Apps folder.")
-        for e in entries(sid, apps):
-            if not e[3] and e[2] in stale_names([e[2]]):
+        for e in mtp.entries(dev, sid, apps):
+            if not e[3] and stale_names([e[2]]):
                 say(f"  Removing the older copy {e[2]}")
-                lib.LIBMTP_Delete_Object(dev, e[0])
+                if lib.LIBMTP_Delete_Object(dev, e[0]) != 0:
+                    raise InstallError(f"Could not remove the older copy {e[2]} from the watch, so the new one "
+                                       "was not copied. Unplug and plug in the watch, and start again.")
         say("  Copying the app to the watch...")
         size = prg.stat().st_size
-        f = File(item_id=0, parent_id=apps, storage_id=sid, filename=TARGET.encode(), filesize=size,
-                 modificationdate=0, filetype=44)   # 44 = LIBMTP_FILETYPE_UNKNOWN
+        f = mtp.File(item_id=0, parent_id=apps, storage_id=sid, filename=TARGET.encode(), filesize=size,
+                     modificationdate=0, filetype=44)   # 44 = LIBMTP_FILETYPE_UNKNOWN
         if lib.LIBMTP_Send_File_From_File(dev, str(prg).encode(), C.byref(f), None, None) != 0:
             raise InstallError("Copying to the watch did not work. Unplug and plug in the watch, and start again.")
-        got = [e for e in entries(sid, apps) if e[2].upper() == TARGET]
-        if not got or got[0][4] != size:
-            raise InstallError("The copy on the watch does not have the right size. Start again.")
+        check_copies([e[4] for e in mtp.entries(dev, sid, apps) if not e[3] and e[2].upper() == TARGET], size)
         say(f"  {size} bytes on the watch.")
     finally:
         lib.LIBMTP_Release_Device(dev)
 
 
-def garmin_express_running() -> bool:
+def garmin_express_running(run=subprocess.run) -> bool:
+    """The Garmin Express app itself (its always-on helper "Garmin Express Service" does not count)."""
     if sys.platform != "darwin":
         return False
-    return subprocess.run(["pgrep", "-f", "Garmin Express"], capture_output=True).returncode == 0
+    return run(["pgrep", "-x", "Garmin Express"], capture_output=True).returncode == 0
 
 
 def ensure_libmtp_mac():
@@ -477,42 +587,66 @@ def linux_install_hint() -> str:
     return "install gvfs-mtp (GVfs MTP support) or libmtp with your package manager"
 
 
+def linux_probe(mtp: Mtp | None, use_gio: bool):
+    """One look for the watch on Linux: ("gio", apps URI) or ("libmtp", device) or None. GVfs is
+    asked first; while it shows the watch, libmtp could not open it anyway."""
+    def probe():
+        if use_gio and gio_has_mtp():
+            apps = gio_apps()
+            return ("gio", apps) if apps else None
+        if mtp:
+            dev = mtp.open_watch()
+            return ("libmtp", dev) if dev else None
+        return None
+    return probe
+
+
 def copy_to_watch(prg: Path, wait_s: int) -> None:
-    for method in methods_for(sys.platform):
-        if method == "windows":
-            return copy_windows(prg, wait_s)
-        if method == "gio" and shutil.which("gio") and _gio("mount", "-l").returncode == 0:
-            return copy_gio(prg, wait_s)
-        if method == "libmtp":
-            if sys.platform == "darwin":
-                while garmin_express_running():
-                    input("Garmin Express is running and would hold the watch. Quit it "
-                          "(menu bar icon > Quit), then press Enter. ")
-                return copy_libmtp(prg, wait_s, ensure_libmtp_mac())
-            lib = load_libmtp(sys.platform)
-            if lib:
-                return copy_libmtp(prg, wait_s, lib)
-    raise InstallError("Copying to the watch needs MTP support. Install it with:\n  "
-                       + linux_install_hint() + "\nthen start this installer again.")
+    methods = methods_for(sys.platform)
+    if methods == ["windows"]:
+        return copy_windows(prg, wait_s)
+    if sys.platform == "darwin":
+        if garmin_express_running():
+            input("Garmin Express is running and may hold the watch. Quit it (menu bar icon > Quit), "
+                  "then press Enter. ")
+        mtp = Mtp(ensure_libmtp_mac())
+        ask_plug(wait_s)
+        dev = wait_for(mtp.open_watch, wait_s, f"Close Garmin Express if it is open. {UNPLUG_HINT}")
+        say("  Watch found.")
+        return copy_libmtp(prg, mtp, dev)
+    lib = load_libmtp(sys.platform) if "libmtp" in methods else None
+    use_gio = "gio" in methods and bool(shutil.which("gio"))
+    if not lib and not use_gio:
+        raise InstallError("Copying to the watch needs MTP support. Install it with:\n  "
+                           + linux_install_hint() + "\nthen start this installer again.")
+    ask_plug(wait_s)
+    hint = f"{UNPLUG_HINT}\nIf it still does not show up, MTP support may be missing: {linux_install_hint()}"
+    mtp = Mtp(lib) if lib else None
+    how, where = wait_for(linux_probe(mtp, use_gio), wait_s, hint)
+    say("  Watch found.")
+    if how == "gio":
+        return copy_gio(where, prg)
+    return copy_libmtp(prg, mtp, where)
 
 
 def main(argv: list) -> int:
     say("Insta360 X5 Remote - installer for the Garmin Descent Mk3i 51 mm")
     say()
     args = list(argv)
+
     def opt(name, default=None):
         if name in args:
             i = args.index(name)
-            return args[i + 1] if i + 1 < len(args) else default
+            return args[i + 1] if i + 1 < len(args) else ""
         return default
-    wait_s = int(opt("--wait", "300"))
-    here = Path(__file__).resolve().parent
+
     tmp = Path(tempfile.mkdtemp(prefix="x5-remote-dl-"))
     try:
+        wait_s = parse_wait(opt("--wait", "300"))
         given = opt("--prg")
-        prg = Path(given) if given else local_prg(here)
+        prg = Path(given) if given else local_prg(Path(__file__).resolve().parent)
         if prg:
-            if not prg.exists():
+            if not prg.is_file():
                 raise InstallError(f"{prg} does not exist.")
             check_local(prg)
         else:
@@ -532,6 +666,10 @@ def main(argv: list) -> int:
     except KeyboardInterrupt:
         say()
         say("Stopped.")
+        return 1
+    except (OSError, subprocess.SubprocessError) as e:
+        say()
+        say(f"Something went wrong ({e.__class__.__name__}: {e}). Unplug and plug in the watch, and start again.")
         return 1
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

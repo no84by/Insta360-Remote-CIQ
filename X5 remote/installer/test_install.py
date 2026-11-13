@@ -78,15 +78,80 @@ class Checksums(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / self.name
             p.write_bytes(self.data)
-            self.assertEqual(install.local_prg(Path(d)), p)
-            with mock.patch.object(install, "say"):
-                install.check_local(p)                         # no SHA256SUMS: used, unchecked
+            with mock.patch.object(install, "say") as say:
+                install.check_local(p)                         # no SHA256SUMS: used, with a warning
+                self.assertIn("Warning", say.call_args[0][0])
                 (Path(d) / "SHA256SUMS").write_text(self.sums())
                 install.check_local(p)
                 (Path(d) / "SHA256SUMS").write_text(self.sums("1" * 64))
                 with self.assertRaises(install.InstallError):
                     install.check_local(p)
 
+    def test_local_prg_newest_version_for_this_watch_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            for n in ("insta360-x5-remote-1.1.10-descentmk351mm.prg", "insta360-x5-remote-1.1.9-descentmk351mm.prg",
+                      "insta360-x5-remote-2.0.0-epix2pro51mm.prg", "zzz.prg"):
+                (Path(d) / n).write_bytes(b"x")
+            self.assertEqual(install.local_prg(Path(d)).name, "insta360-x5-remote-1.1.10-descentmk351mm.prg")
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "other.prg").write_bytes(b"x")
+            self.assertIsNone(install.local_prg(Path(d)))
+
+
+class Errors(unittest.TestCase):
+    def test_download_problems_become_friendly_errors(self):
+        import subprocess
+        import urllib.error
+        for exc in (urllib.error.URLError("down"), OSError("disk"), subprocess.TimeoutExpired("curl", 1),
+                    ValueError("bad json")):
+            with mock.patch.object(install, "_fetch", side_effect=exc), mock.patch.object(install, "say"):
+                with self.assertRaises(install.InstallError) as cm:
+                    install.download_latest(Path(tempfile.gettempdir()))
+                self.assertIn("Could not download", str(cm.exception))
+
+    def test_bad_json_answer(self):
+        with mock.patch.object(install, "_fetch", return_value=b"not json"), mock.patch.object(install, "say"):
+            with self.assertRaises(install.InstallError):
+                install.download_latest(Path(tempfile.gettempdir()))
+
+    def test_wait_option(self):
+        self.assertEqual(install.parse_wait("120"), 120)
+        for bad in ("", "abc", "0", "-5", "1.5", None):
+            with self.assertRaises(install.InstallError):
+                install.parse_wait(bad)
+        with mock.patch.object(install, "say") as say:
+            self.assertEqual(install.main(["--wait", "soon", "--check"]), 1)
+            self.assertIn("--wait", " ".join(str(c[0][0]) for c in say.call_args_list if c[0]))
+
+    def test_wait_for(self):
+        t = [0]
+        clock = lambda: t[0]
+        def sleep(s):
+            t[0] += s
+        calls = []
+        with mock.patch.object(install, "say"):
+            self.assertEqual(install.wait_for(lambda: calls.append(1) or (len(calls) >= 3 and "dev"), 60, "hint",
+                                              clock, sleep), "dev")
+            with self.assertRaises(install.InstallError) as cm:
+                install.wait_for(lambda: None, 10, "unplug", clock, sleep)
+        self.assertIn("unplug", str(cm.exception))
+
+
+class GarminExpress(unittest.TestCase):
+    def test_matches_the_app_not_its_service(self):
+        run = mock.Mock(return_value=mock.Mock(returncode=1))
+        with mock.patch.object(install.sys, "platform", "darwin"):
+            self.assertFalse(install.garmin_express_running(run))
+        self.assertEqual(run.call_args[0][0], ["pgrep", "-x", "Garmin Express"])
+
+    def test_asks_once_then_continues(self):
+        with mock.patch.object(install.sys, "platform", "darwin"), \
+                mock.patch.object(install, "garmin_express_running", return_value=True), \
+                mock.patch("builtins.input", return_value="") as ask, \
+                mock.patch.object(install, "ensure_libmtp_mac", side_effect=install.InstallError("stop")):
+            with self.assertRaises(install.InstallError):
+                install.copy_to_watch(Path("x.prg"), 10)
+        self.assertEqual(ask.call_count, 1)
 
 class AppsFolder(unittest.TestCase):
     R = install.ROOT
@@ -103,10 +168,26 @@ class AppsFolder(unittest.TestCase):
         self.assertIsNone(install.find_apps([(2, self.R, "GARMIN", True), (3, 2, "Activity", True)]))
         self.assertIsNone(install.find_apps([(5, 7, "Apps", True)]))        # Apps not under GARMIN
 
+    NAMES = ["INSTAREM.PRG", "instarem.prg", "insta360-x5-remote-1.1.2-descentmk351mm.prg",
+             "OTHER.PRG", "INSTAREM.TXT", "LOGS", "XINSTAREM.PRG"]
+
     def test_stale_copies(self):
-        names = ["INSTAREM.PRG", "instarem.prg", "insta360-x5-remote-1.1.2-descentmk351mm.prg",
-                 "OTHER.PRG", "INSTAREM.TXT", "LOGS"]
-        self.assertEqual(install.stale_names(names), names[:3])
+        self.assertEqual(install.stale_names(self.NAMES), self.NAMES[:3])
+
+    def test_windows_filter_is_the_same_rule(self):
+        import re
+        s = install.windows_script("C:\\t\\INSTAREM.PRG", 1)
+        m = re.search(r"\$stale = '([^']*)'", s)
+        pattern = m.group(1).replace("''", "'")
+        self.assertEqual(pattern, "^" + install.STALE_RE + "$")
+        # the .NET -imatch of that pattern picks the same names as the Python rule
+        self.assertEqual([n for n in self.NAMES if re.search(pattern, n, re.I)], install.stale_names(self.NAMES))
+
+    def test_one_copy_of_the_right_size(self):
+        install.check_copies([100], 100)
+        for sizes in ([], [100, 100], [99]):
+            with self.assertRaises(install.InstallError):
+                install.check_copies(sizes, 100)
 
 
 class Dispatch(unittest.TestCase):
@@ -125,11 +206,39 @@ class Dispatch(unittest.TestCase):
         self.assertEqual(install.gio_roots(out), ["mtp://Garmin_Descent_Mk3i_0000/"])
 
     def test_windows_script(self):
-        s = install.windows_script("C:\\Temp\\it's\\INSTAREM.PRG", 1234, 300)
+        s = install.windows_script("C:\\Temp\\it's\\INSTAREM.PRG", 1234)
         self.assertIn("$src = 'C:\\Temp\\it''s\\INSTAREM.PRG'", s)
         self.assertIn("$size = 1234", s)
         self.assertIn("Child $g 'Apps'", s)
-        self.assertIn("CopyHere", s)
+        self.assertIn("size not reported by Windows", s)
+        self.assertIn("exit 0 } else { exit 2 }", install.windows_probe_script())
+
+    def test_uri_child(self):
+        uris = ["mtp://Garmin_Descent/Internal%20Storage/", "mtp://Garmin_Descent/Other/"]
+        self.assertEqual(install.uri_child(uris, "internal storage"), "mtp://Garmin_Descent/Internal%20Storage/")
+        self.assertEqual(install.uri_child(["mtp://x/s/Garmin"], "GARMIN"), "mtp://x/s/Garmin/")
+        self.assertIsNone(install.uri_child(uris, "GARMIN"))
+
+    def test_linux_uses_gio_only_with_an_mtp_device(self):
+        mtp = mock.Mock()
+        mtp.open_watch.return_value = "dev"
+        with mock.patch.object(install, "gio_has_mtp", return_value=False):
+            self.assertEqual(install.linux_probe(mtp, True)(), ("libmtp", "dev"))
+            self.assertIsNone(install.linux_probe(None, True)())
+        with mock.patch.object(install, "gio_has_mtp", return_value=True), \
+                mock.patch.object(install, "gio_apps", return_value="mtp://x/s/GARMIN/Apps/"):
+            self.assertEqual(install.linux_probe(mtp, True)(), ("gio", "mtp://x/s/GARMIN/Apps/"))
+        mtp.open_watch.return_value = None
+        with mock.patch.object(install, "gio_has_mtp", return_value=False):
+            self.assertIsNone(install.linux_probe(mtp, True)())
+
+    def test_linux_without_any_mtp_support_prints_the_hint(self):
+        with mock.patch.object(install.sys, "platform", "linux"), \
+                mock.patch.object(install, "load_libmtp", return_value=None), \
+                mock.patch.object(install.shutil, "which", return_value=None):
+            with self.assertRaises(install.InstallError) as cm:
+                install.copy_to_watch(Path("x.prg"), 10)
+        self.assertIn("MTP support", str(cm.exception))
 
     def test_check_only_never_touches_the_watch(self):
         with tempfile.TemporaryDirectory() as d:
@@ -151,3 +260,82 @@ class Dispatch(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LibmtpCopy(unittest.TestCase):
+    """copy_libmtp against a fake libmtp: delete failures stop the copy; the result is checked."""
+
+    def fake(self, delete_rc=0, after=None):
+        R = install.ROOT
+        mtp = mock.Mock()
+        mtp.C = mock.Mock()
+        mtp.File = mock.Mock()
+        lib = mtp.lib
+        lib.LIBMTP_Delete_Object.return_value = delete_rc
+        lib.LIBMTP_Send_File_From_File.return_value = 0
+        storage = mock.Mock()
+        storage.contents.id = 1
+        storage.contents.next = None
+        dev = mock.Mock()
+        dev.contents.storage = storage
+        listings = {R: [(2, R, "GARMIN", True, 0)], 2: [(4, 2, "Apps", True, 0)],
+                    4: [(7, 4, "INSTAREM.PRG", False, 50)]}
+        state = {"sent": False}
+
+        def entries(_dev, _sid, parent):
+            if parent == 4 and state["sent"]:
+                return after
+            return listings.get(parent, [])
+
+        def send(*a):
+            state["sent"] = True
+            return 0
+        mtp.entries.side_effect = entries
+        lib.LIBMTP_Send_File_From_File.side_effect = send
+        return mtp, dev
+
+    def prg(self, d, size):
+        p = Path(d) / "a.prg"
+        p.write_bytes(b"x" * size)
+        return p
+
+    def test_delete_failure_aborts_before_sending(self):
+        mtp, dev = self.fake(delete_rc=1)
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(install, "say"):
+            with self.assertRaises(install.InstallError) as cm:
+                install.copy_libmtp(self.prg(d, 100), mtp, dev)
+        self.assertIn("Could not remove", str(cm.exception))
+        mtp.lib.LIBMTP_Send_File_From_File.assert_not_called()
+        mtp.lib.LIBMTP_Release_Device.assert_called_once()
+
+    def test_success_and_duplicate_check(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(install, "say"):
+            mtp, dev = self.fake(after=[(8, 4, "INSTAREM.PRG", False, 100)])
+            install.copy_libmtp(self.prg(d, 100), mtp, dev)
+            mtp.lib.LIBMTP_Delete_Object.assert_called_once_with(dev, 7)
+            mtp, dev = self.fake(after=[(8, 4, "INSTAREM.PRG", False, 100), (9, 4, "instarem.prg", False, 100)])
+            with self.assertRaises(install.InstallError):
+                install.copy_libmtp(self.prg(d, 100), mtp, dev)
+
+
+class BusyWatch(unittest.TestCase):
+    def test_present_but_unopenable_is_reported(self):
+        lib = mock.Mock()
+        mtp = install.Mtp.__new__(install.Mtp)
+        C, RawDevice, Device, File = install._mtp_types()
+        mtp.C, mtp.RawDevice, mtp.lib, mtp.open_fails = C, RawDevice, lib, 0
+        raw = (RawDevice * 1)()
+        raw[0].device_entry.vendor_id = install.GARMIN_VID
+
+        def detect(pp, pn):
+            C.cast(pp, C.POINTER(C.POINTER(RawDevice)))[0] = C.cast(raw, C.POINTER(RawDevice))
+            C.cast(pn, C.POINTER(C.c_int))[0] = 1
+            return 0
+        lib.LIBMTP_Detect_Raw_Devices.side_effect = detect
+        lib.LIBMTP_Open_Raw_Device_Uncached.return_value = None
+        self.assertIsNone(mtp.open_watch())
+        self.assertIsNone(mtp.open_watch())
+        with self.assertRaises(install.InstallError) as cm:
+            mtp.open_watch()
+        self.assertIn("another program", str(cm.exception))
+        self.assertEqual(lib.LIBMTP_FreeMemory.call_count, 3)
