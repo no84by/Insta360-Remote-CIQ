@@ -48,6 +48,7 @@ Do not publish raw captures: they contain the Wi-Fi password exchange, GPS posit
 |---|---|
 | `watch-wait.sh [timeout]` | Wait until a Garmin watch is in MTP mode (`091e:507f`). After plug-in it spends 20–60 s as `091e:0003` first. |
 | `mtp-put.c` | Copy a file to an MTP folder by numeric parent id (`mtp-put FILE NAME PARENT_ID`); look up ids with `mtp-folders` |
+| `installer-zip.sh` | Release asset: zips `installer/` (launchers, `install.py`, read-me; no tests) as `dist/x5-remote-installer.zip`. Installer tests: `python3 -m unittest discover -s installer` |
 | `preview.sh` | Render UI states in the Connect IQ simulator and screenshot them |
 
 The app's debug log is `GARMIN/Apps/LOGS/INSTAREM.TXT`. It must exist before the app starts, and it
