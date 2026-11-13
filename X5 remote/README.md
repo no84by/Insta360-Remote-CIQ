@@ -131,8 +131,8 @@ DOWN •                                          ⚙  ← BACK cue (amber while
 | **Hold UP** (menu) | Mode list to jump to a mode, **Exit app** (also while searching) | — |
 
 While searching or when no camera is found, BACK is not used by the app either (the watch closes it).
-START retries the search when no camera is found, and resets a start / stop the camera never
-confirmed.
+START retries the search when no camera is found, and resets a start the camera never confirmed.
+A stop on its way cannot be cancelled: further presses are ignored until the camera answers.
 
 The focused row has an amber pill. Modes change on the watch at once and are sent to the camera
 when you stop pressing (about 0.8 s), so you can scroll through several modes quickly. A setting is
@@ -209,7 +209,9 @@ These come from the camera or from Connect IQ, not from missing work. Details an
 * **Joining a running recording:** if the app starts while the camera already records, the watch
   shows **REC** with a *joined* label and no timer: the camera does not send the recording's length
   in a form the watch can read. Recordings whose start the watch saw (its own, or one started on
-  the camera while connected) show the exact timer, also after a reconnect.
+  the camera while connected) show the exact timer, also after the Bluetooth link drops and comes
+  back while the app runs. After the app is closed and opened again, a recording still running is
+  shown as joined (the camera may have been stopped and restarted meanwhile).
 * **One Bluetooth client at a time.** Close the Insta360 phone app (or anything else connected to
   the camera) first.
 * **No power-on from the watch.** The camera can be woken from off by a Bluetooth *wake beacon*
