@@ -73,6 +73,8 @@ missing). Windows needs nothing else. macOS needs the free `libmtp` (the install
 Linux uses GVfs (most desktops) or `libmtp`. Offline: put the `.prg` and `SHA256SUMS` from the
 release next to the installer files. Details: `READ ME FIRST.txt` in the zip.
 
+Tested on a Descent Mk3i 51 mm with macOS, Windows 11 and Linux (libmtp). The Linux desktop (GVfs) path is untested on hardware.
+
 ### By hand
 
 A ready-built app file (`.prg`) for each supported watch is attached to the GitHub release, with a

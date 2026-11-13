@@ -15,6 +15,10 @@ take a minute or more before the computer can see it. If nothing happens, unplug
 it in again. When the window says "Done", unplug the watch: the app appears in the widget loop
 (scroll up or down from the watch face).
 
+TESTED
+  Tested on a Descent Mk3i 51 mm with macOS, Windows 11 and Linux (libmtp). The Linux desktop
+  (GVfs) path is untested on hardware.
+
 WHAT IT DOES
   1. Downloads the newest X5 Remote release for the Descent Mk3i 51 mm from GitHub and checks it
      against the release's SHA256SUMS. Offline: put the .prg (and SHA256SUMS) from the release
