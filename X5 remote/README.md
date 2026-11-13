@@ -56,8 +56,10 @@ the GitHub release, with a `SHA256SUMS` file to check the download.
 3. Copy the `.prg` file into the watch's `GARMIN/APPS` folder:
    * **Windows:** File Explorer, open the watch → Internal Storage → `GARMIN` → `APPS`.
    * **macOS:** macOS has no built-in MTP support; use an MTP client such as
-     [OpenMTP](https://openmtp.ganeshrvel.com). If it cannot open the watch, quit Image Capture
-     (and Photos) first: they can grab the device as soon as it is plugged in.
+     [OpenMTP](https://openmtp.ganeshrvel.com). It may fail to open the watch, because the
+     system's camera service claims the device on every USB connection (quitting Image Capture
+     does not stop it). Start the copy right after plugging in; if it still fails, use a Windows
+     or Linux computer, which is the simplest route.
    * **Linux:** the file manager (GVfs), `gio copy file.prg "mtp://<device>/Internal Storage/GARMIN/APPS/"`,
      or mount it with `jmtpfs ~/mnt` and copy with `cp`.
 4. Unplug the watch. The app appears in the widget / glance loop (scroll up or down from the watch
