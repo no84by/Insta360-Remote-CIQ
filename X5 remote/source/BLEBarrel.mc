@@ -38,8 +38,8 @@ const SeqPos = 10;
 var recState = stateStopRec;
 var startRecTime = Time.now(); 
 // True when the watch joined a capture already running (connect sync). No reply or push that fits
-// in a 20-byte notification carries the camera's elapsed time (docs/watch-app.md), so the timer
-// then shows the time since the watch joined, and the view labels it (timerNote).
+// in a 20-byte notification carries the camera's elapsed time (docs/watch-app.md), so no timer
+// is shown for it (recTitle, timerNote). Saved with the recording state across app restarts.
 var recAdopted = false;
 
 function recStarted(adopted) {
@@ -48,10 +48,16 @@ function recStarted(adopted) {
 	recAdopted = adopted;
 }
 
-// Label for the timer of an adopted capture, drawn in a text font: the device number fonts hold
-// only digits and a few signs (no "+" on the Descent Mk3i).
+// Label under the title of an adopted capture (text font).
 function timerNote() {
 	return recAdopted ? "joined" : null;
+}
+
+// Recording title. A capture the watch joined shows "REC" and no digits: the camera's elapsed
+// time is not readable on a watch, and the time since joining would read as the recording's
+// length. A start the watch saw (its own, or one on the camera seen live) shows the exact timer.
+function recTitle() {
+	return recAdopted ? "REC" : timerText();
 }
 
 // Recording timer text, digits and ":" only (number font): m:ss / h:mm:ss since startRecTime.
@@ -709,25 +715,20 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 	// Capture state from the 0x2010 push or a 0x0F poll reply (not the connect sync).
 	//  - confirms the watch's pending start / stop;
 	//  - follows a video recording started or stopped on the camera itself. The start is seen
-	//    live, so the timer is exact (not marked). After the watch's own stop the camera still
-	//    pushes a non-zero state for a moment (`state=1` then `state=0`, and state 24 while it
-	//    writes the file), so a start is only taken from the stopped state and not within
-	//    STOP_TAIL_MS of a confirmed stop. Photo states (single, burst, interval, starlapse) keep
-	//    their own path: they are never taken as a recording.
-	const STOP_TAIL_MS = 2000;
-	var stopDoneMs = null;   // System.getTimer() when the watch's own stop was confirmed
+	//    live, so the timer is exact (not marked). During the watch's own stop the camera still
+	//    pushes `state=1` before `state=0` (real watch logs: always in that order), so a start is
+	//    only taken from the stopped state, never while stopping; once the stop is confirmed, a
+	//    later recording state is a real start. State 24 (seen while the camera writes the file)
+	//    and the photo states (single, burst, interval, starlapse) are never taken as a recording.
 	function captureState(st) {
 		if (st < 0) { return; }
-		var now = System.getTimer();
 		if (st > 0 && recState == stateStarting && photoSeq < 0) {
 			recStarted(false);
 			lapseSeq = -1;
 		} else if (st == 0 && recState == stateStopping && photoSeq < 0) {
 			recState = stateStopRec;
 			lapseSeq = -1;
-			stopDoneMs = now;
-		} else if (st > 0 && recState == stateStopRec && photoSeq < 0 && lapseSeq < 0
-				&& (stopDoneMs == null || now - stopDoneMs >= STOP_TAIL_MS)) {
+		} else if (st > 0 && recState == stateStopRec && photoSeq < 0 && lapseSeq < 0) {
 			var id = modeForCaptureState(st);
 			if (id == null || st == 24 || !id.substring(0, 1).equals("v")) { return; }
 			// the watch follows the camera's mode (0x2053): keep a video mode it already shows

@@ -280,7 +280,7 @@ function settingPushEchoAndWhole(logger) {
 }
 
 // App started while the camera records (real cut 0x0F reply, Starlapse running): the camera's
-// elapsed time does not fit in 20 bytes, so the timer counts from the join and is labelled.
+// elapsed time does not fit in 20 bytes, so no timer is shown: "REC" and a "joined" label.
 // A recording the watch itself started shows a plain timer.
 (:test)
 function adoptedRecordingTimerMarked(logger) {
@@ -290,16 +290,16 @@ function adoptedRecordingTimerMarked(logger) {
 	BLEBarrel.recState = BLEBarrel.stateStopRec;
 	d.capSeq = 0x41; d.syncOnConnect = true;
 	d.reassembleX5([0x18, 0, 0, 0, 0x04, 0, 0, 0xc8, 0x00, 0x02, 0x41, 0, 0, 0x80, 0, 0, 0x0a, 0x06, 0x08, 0x13]b);
-	var adopted = BLEBarrel.timerText();
+	var adopted = BLEBarrel.recTitle();   // joined: no digits
 	var note = BLEBarrel.timerNote();
 	// stop, then the watch starts a recording: confirmed by the 0x0F reply (state 1)
 	BLEBarrel.recState = BLEBarrel.stateStarting; BLEBarrel.photoSeq = -1;
 	d.capSeq = 0x42;
 	d.reassembleX5([0x18, 0, 0, 0, 0x04, 0, 0, 0xc8, 0x00, 0x02, 0x42, 0, 0, 0x80, 0, 0, 0x0a, 0x06, 0x08, 0x01]b);
-	var own = BLEBarrel.timerText();
+	var own = BLEBarrel.recTitle();
 	logger.debug("adopted=" + adopted + " note=" + note + " own=" + own);
 	// digits only (number font), the mark is a separate text label
-	var ok = adopted.equals("00:00") && "joined".equals(note) && own.equals("00:00")
+	var ok = adopted.equals("REC") && "joined".equals(note) && own.equals("00:00")
 		&& BLEBarrel.timerNote() == null && !BLEBarrel.recAdopted;
 	resetTestState(d);
 	return ok;
@@ -356,39 +356,35 @@ function capPush(st) {
 	return [0x14, 0, 0, 0, 0x04, 0, 0, 0x10, 0x20, 0x02, 0xff, 0x8a, 0x43, 0xf4, 0, 0, 0x08, st, 0x10, 0x00]b;
 }
 
-// Watch log (real Mk3i): the watch's own stop is followed by `push state=1 rec=3`, then
-// `push state=0 rec=3`: that tail is not a new recording. A recording started on the camera's
-// own button afterwards (`push state=1 rec=0`) is followed with an exact, unmarked timer, and a
-// stop on the camera is followed too. Photo states never start the timer.
+// Real Mk3i logs: during the watch's own stop the camera pushes `state=1 rec=3` BEFORE
+// `state=0 rec=3`: that tail is not a new recording. Right after the stop is confirmed, a
+// recording started on the camera's own button (`push state=1 rec=0`) is followed at once, with
+// an exact, unmarked timer; a stop on the camera is followed too. Photo states and the
+// file-writing state 24 never start the timer.
 (:test)
 function cameraSideRecordingFollowed(logger) {
 	var d = new BLEBarrel.BleDevice();
 	resetTestState(d);
 	BLEBarrel.recState = BLEBarrel.stateStopping;
 	d.reassembleX5(capPush(1));                  // stop tail, still stopping
-	var tail1 = BLEBarrel.recState == BLEBarrel.stateStopping;
+	var tail = BLEBarrel.recState == BLEBarrel.stateStopping;
 	d.reassembleX5(capPush(0));                  // stop confirmed
 	var stopped = BLEBarrel.recState == BLEBarrel.stateStopRec;
-	d.reassembleX5(capPush(1));                  // a late tail right after the stop: ignored
-	var tail2 = BLEBarrel.recState == BLEBarrel.stateStopRec;
-	d.stopDoneMs = Toybox.System.getTimer() - 3000;   // later: the user presses record on the camera
-	d.reassembleX5(capPush(1));
+	d.reassembleX5(capPush(1));                  // the next push: started on the camera
 	var started = BLEBarrel.recState == BLEBarrel.stateStartRec && !BLEBarrel.recAdopted
-		&& BLEBarrel.currentMode.equals("v0") && BLEBarrel.timerText().equals("00:00");
+		&& BLEBarrel.currentMode.equals("v0") && BLEBarrel.recTitle().equals("00:00");
 	d.reassembleX5(capPush(0));                  // stopped on the camera
 	var camStop = BLEBarrel.recState == BLEBarrel.stateStopRec;
 	// photo states (single 4, burst 10, interval 3, starlapse 19) are not a recording
 	BLEBarrel.currentMode = "p0"; BLEBarrel.videoMode = false;
 	d.reassembleX5(capPush(4)); d.reassembleX5(capPush(10)); d.reassembleX5(capPush(3)); d.reassembleX5(capPush(19));
 	var photo = BLEBarrel.recState == BLEBarrel.stateStopRec && BLEBarrel.currentMode.equals("p0");
-	// the file-writing state 24 is not a recording either
-	d.reassembleX5(capPush(24));
+	d.reassembleX5(capPush(24));                 // writing the file
 	var writing = BLEBarrel.recState == BLEBarrel.stateStopRec;
-	logger.debug("tail1=" + tail1 + " stopped=" + stopped + " tail2=" + tail2 + " started=" + started
+	logger.debug("tail=" + tail + " stopped=" + stopped + " started=" + started
 		+ " camStop=" + camStop + " photo=" + photo + " writing=" + writing);
 	resetTestState(d);
-	d.stopDoneMs = null;
-	return tail1 && stopped && tail2 && started && camStop && photo && writing;
+	return tail && stopped && started && camStop && photo && writing;
 }
 
 // Stand-in for the characteristic argument (the handler does not use it).
