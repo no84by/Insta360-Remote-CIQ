@@ -103,7 +103,13 @@ class RemoteDelegate extends Ui.BehaviorDelegate {
 			Ui.requestUpdate();
 			return true;
 		}
-		if (s == UI_STARTING || s == UI_STOPPING || s == UI_BUSY) {
+		if (s == UI_STOPPING) {
+			// A stop is on its way: a second press must not turn it into "stopped" (the camera may
+			// still be recording). The camera's answer, the 2 s poll or the 60 s net settle it.
+			inLog("START ignored: stop pending");
+			return true;
+		}
+		if (s == UI_STARTING || s == UI_BUSY) {
 			// Camera never confirmed: drop back to ready so the next press retries.
 			BLEBarrel.recState = BLEBarrel.stateStopRec;
 			mMessage = "";

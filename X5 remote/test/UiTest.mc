@@ -113,3 +113,26 @@ function swipeDoesNotHighlight(logger) {
 	resetTestState(ble);
 	return ok;
 }
+
+// A second START while a stop is on its way is ignored: the watch keeps waiting for the camera
+// (a late state=1 push must not show a new recording at 00:00).
+(:test)
+function startDuringStopIgnored(logger) {
+	var ble = new SendLogBle();
+	resetTestState(ble);
+	ble.device = {}; ble.linkReady = true; ble.scanning = false;
+	var demo = $.demoState;
+	$.demoState = null;
+	BLEBarrel.recState = BLEBarrel.stateStopping;
+	var d = new RemoteDelegate(ble);
+	d.runStart();
+	var kept = BLEBarrel.recState == BLEBarrel.stateStopping && ble.sent.size() == 0;
+	// a pending START can still be reset by a press (unchanged)
+	BLEBarrel.recState = BLEBarrel.stateStarting;
+	d.runStart();
+	var startReset = BLEBarrel.recState == BLEBarrel.stateStopRec;
+	logger.debug("kept=" + kept + " startReset=" + startReset);
+	$.demoState = demo;
+	resetTestState(ble);
+	return kept && startReset;
+}
