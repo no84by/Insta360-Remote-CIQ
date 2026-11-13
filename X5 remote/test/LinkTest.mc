@@ -71,3 +71,38 @@ function queueBoundKeepsUserCommands(logger) {
 	resetQueue();
 	return n <= BLEBarrel.QUEUE_CAP && keep == 2 && headKept && stopAt2 && lastIsStart && drops % 4 == 0 && allKept;
 }
+
+class StartCountingBle extends BLEBarrel.BleDevice {
+	var starts = 0;
+	function initialize() { BleDevice.initialize(); }
+	function startX5() { starts++; linkReady = true; }
+}
+
+// The advertised name did not say X5 (missing / unexpected): a real 0x2053 push from the watch
+// log switches the app to X5 handling, starts the X5 session that the connect path skipped, and
+// the push itself is applied. A frame both generations send (0x2010) does not switch.
+(:test)
+function x5OnlyFramePromotes(logger) {
+	var d = new StartCountingBle();
+	BLEBarrel.x5Proto = false;
+	BLEBarrel.deviceName = "Insta360 cam";
+	d.device = {};   // connected; only compared with null here
+	d.linkReady = false;
+	BLEBarrel.recState = BLEBarrel.stateStopRec;
+	BLEBarrel.modeReq = null; BLEBarrel.modeHoldUntil = 0;
+	BLEBarrel.currentMode = "DefaultV"; BLEBarrel.currentLabel = "Default Video";
+	d.onCharacteristicChanged(null, [0x14, 0, 0, 0, 0x04, 0, 0, 0x10, 0x20, 0x02, 0xff, 0, 0, 0x80, 0, 0, 0x08, 0x00, 0x10, 0x06]b);
+	var notYet = !BLEBarrel.isX5() && d.starts == 0;
+	d.onCharacteristicChanged(null, [0x16, 0, 0, 0, 0x04, 0, 0, 0x53, 0x20, 0x02, 0xff, 0x8a, 0x43, 0xf4, 0, 0, 0x08, 0x03, 0x10, 0x64]b);
+	logger.debug("notYet=" + notYet + " x5=" + BLEBarrel.isX5() + " starts=" + d.starts + " mode=" + BLEBarrel.currentMode + " menu=" + BLEBarrel.menuLevel);
+	var ok = notYet && BLEBarrel.isX5() && d.starts == 1 && BLEBarrel.currentMode.equals("p3") && BLEBarrel.menuLevel == 2;
+	// a reconnect with an unrecognised name keeps the verdict; a known older camera resets it
+	d.adoptName("Insta360 cam");
+	var kept = BLEBarrel.isX5();
+	d.adoptName("X3 ABCDEF");
+	var reset = !BLEBarrel.isX5() && BLEBarrel.menuLevel == 1;
+	d.adoptName("X5 1ABCDE");
+	BLEBarrel.x5Proto = false;
+	d.device = null;
+	return ok && kept && reset;
+}

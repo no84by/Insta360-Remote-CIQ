@@ -278,8 +278,34 @@ function setLapseDurX5(tm, s) {
 function setSensorX5(v) { return frameX5(0x41, [0x08, v]b); }
 function shutdownX5() { return frameX5(0xDB, []b); }   // SET_SHUTDOWN, empty body
 
+// Camera model. The advertised name is the first hint ("X5 …"); a frame only the X5 protocol
+// sends (x5OnlyFrame) proves it, also when the name was missing or unexpected.
+var x5Proto = false;     // X5 proven for this run (by name at connect, or by an X5-only frame)
+
+function nameIsX5(n) {
+	return n != null && n.length() >= 3 && n.substring(0, 3).equals("X5 ");
+}
+
+// Older cameras the upstream app supports (they use the legacy command set).
+function nameIsLegacy(n) {
+	if (n == null || n.length() < 3) { return false; }
+	var p = n.substring(0, 3);
+	return p.equals("ONE") || p.equals("X3 ") || p.equals("X4 ") || p.equals("GO2") || p.equals("GO3")
+		|| p.equals("GO ") || p.equals("Ace");
+}
+
 function isX5() {
-	return deviceName != null && deviceName.length() >= 3 && deviceName.substring(0, 3).equals("X5 ");
+	return x5Proto || nameIsX5(deviceName);
+}
+
+// Notification codes that only the X5 protocol generation sends: CAM_SUBMODE_CHANGE (0x2053),
+// AUTHORIZATION_RESULT (0x2011), WATCH_RES (0x2065). All carry the code in the 16-byte header,
+// so they are recognised even when cut at 20 bytes. (No reply carries an identity that fits:
+// CAMERA_TYPE "Insta360 X5" is a 34-byte reply, cut before the name.)
+function x5OnlyFrame(v) {
+	if (v.size() < 16 || v[4] != 0x04) { return false; }
+	var code = v[7] | (v[8] << 8);
+	return code == 0x2053 || code == 0x2011 || code == 0x2065;
 }
 
 var currentMode = "DefaultV";
@@ -760,6 +786,7 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 	}
 
 	function onCharacteristicChanged(ch, value) {
+		if (!isX5() && x5OnlyFrame(value)) { promoteX5(); }
 		if (isX5()) { reassembleX5(value); }
 		if (LOG_FRAMES && value.size() != 7) { debug("[rx] " + value.size() + "b " + hex(value, 40)); } // skip 1 Hz keep-alives
 		// X5 response: [len u32][04 00 00][code u16][02][seq u24][80|f4][00 00]
@@ -970,15 +997,28 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 
 	function onDescriptorWrite(descriptor, status) {
 		debug("[notif] cccd write status " + status);
-		if (isX5() && status == 0) {
-			sendRaw(frameSyncX5);
-			linkReady = true;
-			debug("[x5] sync sent, link ready");
-			syncOnConnect = true;
-			checkAuthX5();
-			queryCaptureX5();
-			queryStorageX5();
-		}
+		if (isX5() && status == 0) { startX5(); }
+	}
+
+	// X5 session start: sync, authorization, capture state, card state.
+	function startX5() {
+		sendRaw(frameSyncX5);
+		linkReady = true;
+		debug("[x5] sync sent, link ready");
+		syncOnConnect = true;
+		checkAuthX5();
+		queryCaptureX5();
+		queryStorageX5();
+	}
+
+	// An X5-only frame arrived while the name did not say X5: switch to X5 handling for the rest
+	// of the run, and start the X5 session if the connect path skipped it.
+	function promoteX5() {
+		x5Proto = true;
+		menuLevel = 2;
+		debug("[model] X5 frame from " + deviceName + ": switching to X5");
+		if (device != null && !linkReady) { startX5(); }
+		WatchUi.requestUpdate();
 	}
 
 	// Queue a pre-built frame (no sequence rewrite) and kick the write chain.
@@ -1048,6 +1088,21 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 		debug("[photo] TAKE_PICTURE seq=" + SeqNo);
 	}
 
+	// The camera we connect to: its name sets the menu level and the model. A name that says
+	// neither X5 nor a known older camera keeps the model proven earlier in this run (the same
+	// camera reconnecting with a different advertisement); an X5-only frame still promotes it.
+	function adoptName(name) {
+		deviceName = name;
+		var p = name.length() >= 3 ? name.substring(0, 3) : name;
+		menuLevel = 0;
+		if (p.equals("ONE") || p.equals("X3 ")) { menuLevel = 1; }
+		if (p.equals("X4 ")) { menuLevel = 2; }
+		if (nameIsX5(name)) { x5Proto = true; }
+		else if (nameIsLegacy(name)) { x5Proto = false; }
+		if (x5Proto) { menuLevel = 2; }
+		debug("[model] " + name + (isX5() ? " (X5)" : ""));
+	}
+
 	private function connect(result) {
 		// debug("[connect] " + result.getDeviceName());
 		try {
@@ -1083,10 +1138,11 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 		for (var rawResult = scanResults.next(); rawResult != null; rawResult = scanResults.next()) {
 			var result = rawResult as BluetoothLowEnergy.ScanResult;
 			uuids = result.getServiceUuids();
-			deviceName = result.getDeviceName();
-			if (deviceName != null && deviceName.length() >= 3 && deviceName.substring(0, 3).equals("X5 ")) {
+			// Only the camera we connect to names the model: other devices in range must not.
+			var name = result.getDeviceName();
+			if (LOG_FRAMES && nameIsX5(name)) {
 				var raw = result.getRawData();
-				if (LOG_FRAMES && raw != null) { debug("[adv] " + hex(raw, 40)); }
+				if (raw != null) { debug("[adv] " + hex(raw, 40)); }
 			}
 			// rssi = result.getRssi();
 
@@ -1096,22 +1152,8 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 			//search for an insta360 device based on service UUID
 			for (iter = uuids.next(); iter != null; iter = uuids.next()) {
 //				debug("uuid: " + iter);
-				menuLevel = 0;
-				if (iter.equals(LBS_SERVICE) and (deviceName != null)) {
-					// debug("Connect " + iter);
-					if (deviceName.substring(0,3).equals("ONE")) {
-						menuLevel = 1;
-					}
-					if (deviceName.substring(0,3).equals("X3 ")) {
-						menuLevel = 1;
-					}
-
-					if (deviceName.substring(0,3).equals("X4 ")) {
-						menuLevel = 2;
-					}
-					if (deviceName.substring(0,3).equals("X5 ")) {
-						menuLevel = 2;
-					}
+				if (iter.equals(LBS_SERVICE) and (name != null)) {
+					adoptName(name);
 					connect(result);
 					return;
 				}
