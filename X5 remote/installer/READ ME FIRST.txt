@@ -1,0 +1,46 @@
+Insta360 X5 Remote - installer for the Garmin Descent Mk3i 51 mm
+==============================================================
+
+Experimental. Not affiliated with, endorsed by, or supported by Insta360 or Garmin. No warranty
+(Mozilla Public License 2.0). No account, no store, no data sent anywhere except the download of
+the app from GitHub.
+
+INSTALL
+  Windows  double-click  "Install on Windows.bat"
+  macOS    double-click  "Install on Mac.command"
+  Linux    run           ./"Install on Linux.sh"   (or double-click, "Run in terminal")
+
+Then plug in the watch with its USB cable when the window asks. After plugging in, the watch can
+take a minute or more before the computer can see it. If nothing happens, unplug the watch and plug
+it in again. When the window says "Done", unplug the watch: the app appears in the widget loop
+(scroll up or down from the watch face).
+
+WHAT IT DOES
+  1. Downloads the newest X5 Remote release for the Descent Mk3i 51 mm from GitHub and checks it
+     against the release's SHA256SUMS. Offline: put the .prg (and SHA256SUMS) from the release
+     next to these files; the installer then uses that file.
+  2. Copies it to the watch's GARMIN/Apps folder as INSTAREM.PRG, replacing an older copy, and
+     checks the copy. To remove the app later, delete that file from GARMIN/Apps.
+
+NEEDS
+  Python 3.8 or newer. If it is missing, the launcher offers the official installer from
+  python.org (Windows, macOS) or tells you the command for your Linux package manager.
+  Windows  nothing else.
+  macOS    libmtp (free). If it is missing and Homebrew is installed, the installer offers to run
+           `brew install libmtp`; otherwise install Homebrew from https://brew.sh first.
+           Quit Garmin Express before you start: while it runs it holds the watch.
+  Linux    GVfs MTP support (most desktops have it) or libmtp; the installer prints the command
+           for your distribution when neither is there.
+
+FIRST START: YOUR COMPUTER MAY WARN YOU
+These files are not signed by Apple or Microsoft.
+  macOS    "cannot be opened because it is from an unidentified developer": right-click the
+           file > Open > Open. On newer macOS: System Settings > Privacy & Security >
+           "Open Anyway". You only have to do this once.
+  Windows  "Windows protected your PC" (SmartScreen): click "More info" > "Run anyway".
+  Linux    if it does not start, make it executable: chmod +x "Install on Linux.sh"
+
+WITHOUT THE LAUNCHERS
+  python3 install.py                 (Windows: py -3 install.py)
+  python3 install.py --prg FILE      install this .prg file
+  python3 install.py --check         only download and check, do not touch the watch
