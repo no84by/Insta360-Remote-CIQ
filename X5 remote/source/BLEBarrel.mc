@@ -48,7 +48,45 @@ var deviceName ="n/a";
 
  
 var SeqNo = 1;
-var queue = [];
+var queue = [];          // 20-byte chunks waiting for the single write slot
+var queueKind = [];      // per chunk: Q_KEEP, or Q_DROP / Q_DROP_CONT for telemetry and keep-alives
+const Q_KEEP = 0;        // user commands, queries, sync: never dropped
+const Q_DROP = 1;        // first chunk of a droppable frame
+const Q_DROP_CONT = 2;   // further chunks of that frame
+const QUEUE_CAP = 16;    // chunks; above it droppable frames are discarded, oldest first
+const WEDGE_LIMIT = 4;   // consecutive refused writes before the link is dropped and rebuilt
+
+function enqueue(chunk, kind) {
+	queue.add(chunk);
+	queueKind.add(kind);
+}
+
+// Split a frame into 20-byte chunks and queue them. GPS telemetry (0x35) may be dropped when
+// the queue backs up; everything else (commands, queries) is kept.
+function queueFrame(value) {
+	var drop = value.size() >= 9 && value[7] == 0x35 && value[8] == 0;
+	var n = (value.size() + 19) / 20;
+	for (var i = 0; i < n; i++) {
+		var end = (i + 1) * 20;
+		if (end > value.size()) { end = value.size(); }
+		enqueue(value.slice(i * 20, end), drop ? (i == 0 ? Q_DROP : Q_DROP_CONT) : Q_KEEP);
+	}
+	trimQueue();
+}
+
+// Over the cap, discard whole droppable frames (oldest first). A droppable frame whose first
+// chunk already left keeps its remaining chunks: a half-sent frame would desync the camera.
+function trimQueue() {
+	var i = 0;
+	while (i < queueKind.size() && queueKind[i] == Q_DROP_CONT) { i++; }
+	while (queue.size() > QUEUE_CAP && i < queue.size()) {
+		if (queueKind[i] != Q_DROP) { i++; continue; }
+		var end = i + 1;
+		while (end < queue.size() && queueKind[end] == Q_DROP_CONT) { end++; }
+		queue = queue.slice(0, i).addAll(queue.slice(end, null));
+		queueKind = queueKind.slice(0, i).addAll(queueKind.slice(end, null));
+	}
+}
 var cmdStartRec = [0x12, 0, 0, 0, 0x4, 0, 0, 0x4, 0, 0x2, 0xff, 0, 0, 0x80, 0, 0, 0x8, 0x1]b;  // Start video Recording commmand
 var cmdStopRec =  [0x12, 0, 0, 0, 0x4, 0, 0, 0x5, 0, 0x2, 0xff, 0, 0, 0x80, 0, 0, 0x10, 0x1]b; // Stop recording command
 var cmdApply =    [0x10, 0, 0, 0, 0x4, 0, 0, 0xf, 0, 0x2, 0xff, 0, 0, 0x80, 0, 0]b; // Apply settings
@@ -309,9 +347,6 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 	// Send command to BLE device
 	function sendCMD(value) {
 		var service;
-		var ch;
-		var i;
-		var j;
 
 		// check that the camera is actually connected, otherwise start a scan
 		// debug("sendCMD: new scan ? " + scanning + " " + (device == null));
@@ -355,14 +390,7 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 		// max message length = 20. the message has to be split into 20 bytes parts which are put in a queue.
 		// each write operation has to be finished before the next one can occur.
 		// the dequeuing is done in the onCharacteristicWrite function
-		if (value.size() > 20) {
-			j = (value.size()-1)/20;
-			for (i = 0; i <= j.toNumber(); i++) { 
-				queue.add(value.slice(i*20,(i+1)*20));
-			} 	
-		} else {
-			queue.add(value);
-		}
+		queueFrame(value);
 		pump();
 	}
 
@@ -373,6 +401,7 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 	// once its write was accepted, and keep-alives are only sent when the queue is idle.
 	var writing = false;
 	var writingTicks = 0;
+	var wedgeCount = 0;   // consecutive refused writes; reset by an accepted write
 	var linkReady = false;
 	var notifRetry = 0;   // X5: notifications enabled + sync sent; nothing is sent before
 
@@ -397,16 +426,33 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 			return;
 		}
 		try {
-			var svc = device.getService(LBS_SERVICE);
-			if (svc == null) { return; }
-			svc.getCharacteristic(LBS_RW_CHAR).requestWrite(queue[0], {:writeType => BluetoothLowEnergy.WRITE_TYPE_DEFAULT});
+			if (!writeChunk(queue[0])) { return; }
 			writing = true;
 			writingTicks = 0;
-			queue = queue.slice(1, queue.size());
+			wedgeCount = 0;
+			queue = queue.slice(1, null);
+			queueKind = queueKind.slice(1, null);
 		} catch (ex) {
-			// stack busy: keep the chunk, retry from the next callback / keep-alive tick
-			debug("[pump] busy, " + queue.size() + " queued");
+			// Stack busy: keep the chunk, retry from the next callback / keep-alive tick. A link
+			// that keeps refusing never recovers by itself (no disconnect event comes): after
+			// WEDGE_LIMIT refusals in a row, drop it and reconnect like after a disconnect.
+			wedgeCount++;
+			debug("[pump] busy, " + queue.size() + " queued: " + ex.getErrorMessage());
+			if (wedgeCount >= WEDGE_LIMIT) {
+				debug("[pump] link wedged after " + wedgeCount + " refusals, reconnecting");
+				wedgeCount = 0;
+				linkLost();
+			}
 		}
+	}
+
+	// One chunk to the command characteristic. False when the service is not there (yet);
+	// throws when the BLE stack refuses the write.
+	function writeChunk(chunk) {
+		var svc = device.getService(LBS_SERVICE);
+		if (svc == null) { return false; }
+		svc.getCharacteristic(LBS_RW_CHAR).requestWrite(chunk, {:writeType => BluetoothLowEnergy.WRITE_TYPE_DEFAULT});
+		return true;
 	}
 
 	var syncOnConnect = false;
@@ -455,7 +501,9 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 		syncOnConnect = false;
 		battPending = false;
 		queue = [];
+		queueKind = [];
 		writing = false;
+		wedgeCount = 0;
 		rxBuf = null;
 		photoSeq = -1; lapseSeq = -1; optSeq = -1; capSeq = -1; storSeq = -1; setSeq = -1;
 	}
@@ -841,24 +889,29 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 			resetLink();
 			enableNotifications();
 		} else {
-			// Link lost (camera standby, out of range). Do NOT re-run open(): that registered the
-			// profile again (Connect IQ refuses it after a few times, then no reconnect works) and
-			// reloaded the recording state saved at the last close. Release the old pairing, so
-			// the system does not reconnect it while we scan and pair again, then scan.
 			debug("[link] disconnected");
-			resetLink();
-			if (device != null) {
-				try { BluetoothLowEnergy.unpairDevice(device); } catch (ex) { debug("[link] unpair: " + ex.getErrorMessage()); }
-			}
-			device = null;
-			connecting = false;
-			if (!scanning) {
-				scanning = true;
-				try {
-					BluetoothLowEnergy.setScanState(BluetoothLowEnergy.SCAN_STATE_SCANNING);
-				} catch (ex) {
-					debug("[link] scan: " + ex.getErrorMessage());
-				}
+			linkLost();
+		}
+	}
+
+	// Link lost (camera standby, out of range) or dropped by the app (wedged writes). Do NOT
+	// re-run open(): that registered the profile again (Connect IQ refuses it after a few times,
+	// then no reconnect works) and reloaded the recording state saved at the last close. Release
+	// the old pairing, so the system does not reconnect it while we scan and pair again, then scan.
+	// Safe to run twice (unpairing also produces a disconnect event).
+	function linkLost() {
+		resetLink();
+		if (device != null) {
+			try { BluetoothLowEnergy.unpairDevice(device); } catch (ex) { debug("[link] unpair: " + ex.getErrorMessage()); }
+		}
+		device = null;
+		connecting = false;
+		if (!scanning) {
+			scanning = true;
+			try {
+				BluetoothLowEnergy.setScanState(BluetoothLowEnergy.SCAN_STATE_SCANNING);
+			} catch (ex) {
+				debug("[link] scan: " + ex.getErrorMessage());
 			}
 		}
 	}
@@ -896,7 +949,7 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 	// Queue a pre-built frame (no sequence rewrite) and kick the write chain.
 	function sendRaw(frame) {
 		if (device == null) { return; }
-		queue.add(frame);
+		enqueue(frame, Q_KEEP);
 		pump();
 	}
 
@@ -920,7 +973,7 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 			if (rxAge >= 2) { debug("[rx] dropping incomplete frame"); rxBuf = null; }
 		}
 		if (queue.size() == 0 && !writing) {
-			queue.add(stateStandby);
+			enqueue(stateStandby, Q_DROP);
 		}
 		pump();
 	}
