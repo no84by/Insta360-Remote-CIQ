@@ -308,6 +308,8 @@ class RemoteView extends WatchUi.View {
 				heroColor = C_RED; titleColor = C_RED;
 				title = BLEBarrel.timerText(); timer = true;
 				info.add(["", BLEBarrel.currentLabel, C_DIM]);
+				// adopted capture: the timer counts from the join (text font, not the number font)
+				if (BLEBarrel.timerNote() != null) { info.add(["", BLEBarrel.timerNote(), C_AMBER]); }
 				startCue = C_TEXT;
 				break;
 			default:

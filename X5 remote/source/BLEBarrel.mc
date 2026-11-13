@@ -39,7 +39,7 @@ var recState = stateStopRec;
 var startRecTime = Time.now(); 
 // True when the watch joined a capture already running (connect sync). No reply or push that fits
 // in a 20-byte notification carries the camera's elapsed time (docs/watch-app.md), so the timer
-// then shows the time since the watch joined, marked with a leading "+".
+// then shows the time since the watch joined, and the view labels it (timerNote).
 var recAdopted = false;
 
 function recStarted(adopted) {
@@ -48,14 +48,19 @@ function recStarted(adopted) {
 	recAdopted = adopted;
 }
 
-// Recording timer text: m:ss / h:mm:ss since startRecTime, "+" first for an adopted capture.
+// Label for the timer of an adopted capture, drawn in a text font: the device number fonts hold
+// only digits and a few signs (no "+" on the Descent Mk3i).
+function timerNote() {
+	return recAdopted ? "joined" : null;
+}
+
+// Recording timer text, digits and ":" only (number font): m:ss / h:mm:ss since startRecTime.
 function timerText() {
 	var secs = Time.now().subtract(startRecTime).value();
 	var hh = secs / 3600;
 	var mm = (secs % 3600) / 60;
 	var ss = secs % 60;
-	var t = (hh > 0) ? hh + ":" + mm.format("%02d") + ":" + ss.format("%02d") : mm.format("%02d") + ":" + ss.format("%02d");
-	return recAdopted ? "+" + t : t;
+	return (hh > 0) ? hh + ":" + mm.format("%02d") + ":" + ss.format("%02d") : mm.format("%02d") + ":" + ss.format("%02d");
 }
 var elapsedRecTime;
 var clockTime;
@@ -641,15 +646,9 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 				}
 				return;
 			}
-			if (st > 0 && recState == stateStarting && photoSeq < 0) {
-				recStarted(false);
-				lapseSeq = -1;
-			} else if (st == 0 && recState == stateStopping) {
-				recState = stateStopRec;
-				lapseSeq = -1;
-			}
+			captureState(st);
 		} else if (code == 0x2010) {
-			// CAPTURE_STATUS push {1: state}: confirms a pending start / stop, never restarts one
+			// CAPTURE_STATUS push {1: state}
 			var t = pbFields(body);
 			var st = -1;
 			for (var i = 0; i < t.size(); i++) {
@@ -657,13 +656,7 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 			}
 			if (st < 0 && body.size() == 0) { st = 0; }   // empty body = field 1 is 0 (idle)
 			debug("[cap] push state=" + st + " rec=" + recState);
-			if (st > 0 && recState == stateStarting && photoSeq < 0) {
-				recStarted(false);
-				lapseSeq = -1;
-			} else if (st == 0 && recState == stateStopping && photoSeq < 0) {
-				recState = stateStopRec;
-				lapseSeq = -1;
-			}
+			captureState(st);
 		} else if (code == 0x2053) {
 			// CAM_SUBMODE_CHANGE: {1: photo sub-mode, 2: video sub-mode}, 100 = none.
 			// Sent when the mode changes, also when it is changed on the camera itself.
@@ -710,6 +703,44 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 			}
 			camCard = st;
 			debug("[card] state=" + st);
+		}
+	}
+
+	// Capture state from the 0x2010 push or a 0x0F poll reply (not the connect sync).
+	//  - confirms the watch's pending start / stop;
+	//  - follows a video recording started or stopped on the camera itself. The start is seen
+	//    live, so the timer is exact (not marked). After the watch's own stop the camera still
+	//    pushes a non-zero state for a moment (`state=1` then `state=0`, and state 24 while it
+	//    writes the file), so a start is only taken from the stopped state and not within
+	//    STOP_TAIL_MS of a confirmed stop. Photo states (single, burst, interval, starlapse) keep
+	//    their own path: they are never taken as a recording.
+	const STOP_TAIL_MS = 2000;
+	var stopDoneMs = null;   // System.getTimer() when the watch's own stop was confirmed
+	function captureState(st) {
+		if (st < 0) { return; }
+		var now = System.getTimer();
+		if (st > 0 && recState == stateStarting && photoSeq < 0) {
+			recStarted(false);
+			lapseSeq = -1;
+		} else if (st == 0 && recState == stateStopping && photoSeq < 0) {
+			recState = stateStopRec;
+			lapseSeq = -1;
+			stopDoneMs = now;
+		} else if (st > 0 && recState == stateStopRec && photoSeq < 0 && lapseSeq < 0
+				&& (stopDoneMs == null || now - stopDoneMs >= STOP_TAIL_MS)) {
+			var id = modeForCaptureState(st);
+			if (id == null || st == 24 || !id.substring(0, 1).equals("v")) { return; }
+			// the watch follows the camera's mode (0x2053): keep a video mode it already shows
+			var cur = currentMode;
+			if (!(cur instanceof Toybox.Lang.String) || !cur.substring(0, 1).equals("v")) { adoptMode(id); }
+			recStarted(false);
+			debug("[cap] recording started on the camera");
+			WatchUi.requestUpdate();
+		} else if (st == 0 && recState == stateStartRec && photoSeq < 0 && lapseSeq < 0) {
+			recState = stateStopRec;
+			recAdopted = false;
+			debug("[cap] recording stopped on the camera");
+			WatchUi.requestUpdate();
 		}
 	}
 
