@@ -41,6 +41,20 @@ var startRecTime = Time.now();
 // in a 20-byte notification carries the camera's elapsed time (docs/watch-app.md), so no timer
 // is shown for it (recTitle, timerNote). Saved with the recording state across app restarts.
 var recAdopted = false;
+// True from an app start that restored a recording from storage until the first connect sync.
+// That recording's start time is the one saved at close: the camera may have been stopped and
+// restarted meanwhile, so if it is recording at the sync, the watch shows it as joined.
+var recRestored = false;
+
+// Recording state saved at the last close. A start / stop still waiting then never got its
+// answer: same reverts as linkLost.
+function restoreRec(saved, adopted) {
+	recState = (saved == null) ? stateStopRec : saved;
+	recAdopted = adopted == true;
+	if (recState == stateStarting) { recState = stateStopRec; }
+	else if (recState == stateStopping) { recState = stateStartRec; }
+	recRestored = recState == stateStartRec;
+}
 
 function recStarted(adopted) {
 	recState = stateStartRec;
@@ -637,12 +651,16 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 			if (syncOnConnect) {
 				syncOnConnect = false;
 				var id = (st > 0) ? modeForCaptureState(st) : null;
+				if (st == 24) { debug("[cap] state 24 (connect sync) rec=" + recState); }
+				var restored = recRestored;
+				recRestored = false;
 				if (id != null) {
-					// Camera is capturing. If the watch already knew (reconnect during its own or
-					// an adopted recording), keep its timer. Otherwise follow it: its elapsed time is
-					// not readable on a watch (see recAdopted), so the timer counts from now, marked.
+					// Camera is capturing. After a link reconnect in this app run the watch's own
+					// record of the start is exact: keep it. Otherwise (new join, or a recording
+					// restored after an app restart) its elapsed time is not readable on a watch:
+					// shown as joined (REC, no digits).
 					adoptMode(id);
-					if (recState != stateStartRec) { recStarted(true); }
+					if (recState != stateStartRec || restored) { recStarted(true); }
 				} else {
 					// camera idle: make it match the mode the watch shows
 					if (recState != stateStarting) { recState = stateStopRec; }
@@ -662,6 +680,7 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 			}
 			if (st < 0 && body.size() == 0) { st = 0; }   // empty body = field 1 is 0 (idle)
 			debug("[cap] push state=" + st + " rec=" + recState);
+			if (st == 24) { debug("[cap] state 24 (push) rec=" + recState); }
 			captureState(st);
 		} else if (code == 0x2053) {
 			// CAM_SUBMODE_CHANGE: {1: photo sub-mode, 2: video sub-mode}, 100 = none.
@@ -1022,10 +1041,20 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 			resetLink();
 			enableNotifications();
 		} else {
+			// Our own linkLost unpairs the old device, which can produce a disconnect event of its
+			// own, possibly after the rescan already made a new link: only a disconnect of the
+			// link we hold counts.
+			if (device == null) { debug("[link] disconnected (no link held, ignored)"); return; }
+			if (dev != null && lastUnpaired != null && dev == lastUnpaired && dev != device) {
+				debug("[link] disconnect of the released device, ignored");
+				return;
+			}
 			debug("[link] disconnected");
 			linkLost();
 		}
 	}
+
+	var lastUnpaired = null;   // the device linkLost released last
 
 	// Link lost (camera standby, out of range) or dropped by the app (wedged writes). Do NOT
 	// re-run open(): that registered the profile again (Connect IQ refuses it after a few times,
@@ -1039,6 +1068,7 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 		else if (recState == stateStopping) { recState = stateStartRec; }
 		resetLink();
 		if (device != null) {
+			lastUnpaired = device;
 			try { BluetoothLowEnergy.unpairDevice(device); } catch (ex) { debug("[link] unpair: " + ex.getErrorMessage()); }
 		}
 		device = null;
@@ -1436,11 +1466,7 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 		}
 		// debug("open");
 		// Load last state of app
-		recState = Storage.getValue("recState");
-		recAdopted = Storage.getValue("recAdopted") == true;
-		if (recState == null) {
-			recState = stateStopRec;
-		}
+		restoreRec(Storage.getValue("recState"), Storage.getValue("recAdopted"));
 		currentMode = fromStore(Storage.getValue("currentMode"));
 		currentLabel = Storage.getValue("currentLabel");
 		if (currentMode == null) {

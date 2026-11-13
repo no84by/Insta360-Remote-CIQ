@@ -391,3 +391,67 @@ function cameraSideRecordingFollowed(logger) {
 function noChar() {
 	return null;
 }
+
+// App restart: a start / stop pending at close is reverted. A recording restored from storage
+// is shown as joined at the connect sync (it may have been restarted on the camera meanwhile);
+// a link reconnect within the app run keeps the exact timer.
+(:test)
+function restoredRecordingShownJoined(logger) {
+	var d = new BLEBarrel.BleDevice();
+	resetTestState(d);
+	BLEBarrel.restoreRec(BLEBarrel.stateStarting, false);
+	var startReverted = BLEBarrel.recState == BLEBarrel.stateStopRec && !BLEBarrel.recRestored;
+	BLEBarrel.restoreRec(BLEBarrel.stateStopping, false);
+	var stopReverted = BLEBarrel.recState == BLEBarrel.stateStartRec && BLEBarrel.recRestored;
+	BLEBarrel.restoreRec(null, null);
+	var none = BLEBarrel.recState == BLEBarrel.stateStopRec;
+	// restored recording, camera still recording at the sync: joined
+	BLEBarrel.restoreRec(BLEBarrel.stateStartRec, false);
+	BLEBarrel.startRecTime = new Toybox.Time.Moment(Toybox.Time.now().value() - 600);
+	d.capSeq = 0x45; d.syncOnConnect = true;
+	d.reassembleX5([0x18, 0, 0, 0, 0x04, 0, 0, 0xc8, 0x00, 0x02, 0x45, 0, 0, 0x80, 0, 0, 0x0a, 0x06, 0x08, 0x01]b);
+	var joined = BLEBarrel.recState == BLEBarrel.stateStartRec && BLEBarrel.recAdopted
+		&& BLEBarrel.recTitle().equals("REC") && !BLEBarrel.recRestored;
+	// then a link reconnect in the same run during the watch's own recording: exact timer kept
+	BLEBarrel.recStarted(false);
+	var t0 = new Toybox.Time.Moment(Toybox.Time.now().value() - 75);
+	BLEBarrel.startRecTime = t0;
+	d.capSeq = 0x46; d.syncOnConnect = true;
+	d.reassembleX5([0x18, 0, 0, 0, 0x04, 0, 0, 0xc8, 0x00, 0x02, 0x46, 0, 0, 0x80, 0, 0, 0x0a, 0x06, 0x08, 0x01]b);
+	var kept = !BLEBarrel.recAdopted && BLEBarrel.startRecTime.value() == t0.value();
+	logger.debug("startReverted=" + startReverted + " stopReverted=" + stopReverted + " none=" + none
+		+ " joined=" + joined + " kept=" + kept);
+	resetTestState(d);
+	BLEBarrel.recRestored = false;
+	return startReverted && stopReverted && none && joined && kept;
+}
+
+// The disconnect event caused by our own unpair (in linkLost) must not drop the link the
+// rescan already made; nor does a disconnect when no link is held. A real disconnect of the
+// current link still runs the disconnect path.
+(:test)
+function staleDisconnectIgnored(logger) {
+	var d = new BLEBarrel.BleDevice();
+	resetTestState(d);
+	var oldDev = {"n" => 1};
+	var newDev = {"n" => 2};
+	d.device = oldDev;
+	d.linkLost();                                   // e.g. wedged writes: releases oldDev
+	d.scanning = false;
+	var none = true;
+	d.onConnectedStateChanged(noChar(), Toybox.BluetoothLowEnergy.CONNECTION_STATE_DISCONNECTED);
+	none = d.device == null && !d.scanning;         // nothing held: ignored, no second rescan
+	d.device = newDev; d.linkReady = true;          // the rescan made a new link
+	d.onConnectedStateChanged(staleDev(oldDev), Toybox.BluetoothLowEnergy.CONNECTION_STATE_DISCONNECTED);
+	var stale = d.device == newDev && d.linkReady;
+	d.onConnectedStateChanged(staleDev(newDev), Toybox.BluetoothLowEnergy.CONNECTION_STATE_DISCONNECTED);
+	var real = d.device == null && d.scanning;
+	logger.debug("none=" + none + " stale=" + stale + " real=" + real);
+	resetTestState(d);
+	return none && stale && real;
+}
+
+// Stand-in for the Device argument (only compared by reference).
+function staleDev(x) {
+	return x;
+}
