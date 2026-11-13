@@ -53,13 +53,12 @@ the GitHub release, with a `SHA256SUMS` file to check the download.
 1. Download `insta360-x5-remote-<version>-<device>.prg` for your watch from the release page.
    `descentmk351mm` is the Descent Mk3i 51 mm.
 2. Connect the watch to the computer with its USB cable. It shows up as a media device (MTP).
+   This can take a minute or more after plugging in; if it does not appear, unplug and plug in again.
 3. Copy the `.prg` file into the watch's `GARMIN/APPS` folder:
    * **Windows:** File Explorer, open the watch → Internal Storage → `GARMIN` → `APPS`.
    * **macOS:** macOS has no built-in MTP support; use an MTP client such as
-     [OpenMTP](https://openmtp.ganeshrvel.com). It may fail to open the watch, because the
-     system's camera service claims the device on every USB connection (quitting Image Capture
-     does not stop it). Start the copy right after plugging in; if it still fails, use a Windows
-     or Linux computer, which is the simplest route.
+     [OpenMTP](https://openmtp.ganeshrvel.com), or `mtp-sendfile` from Homebrew's `libmtp`.
+     Quit Garmin Express first: while it runs it holds the watch exclusively.
    * **Linux:** the file manager (GVfs), `gio copy file.prg "mtp://<device>/Internal Storage/GARMIN/APPS/"`,
      or mount it with `jmtpfs ~/mnt` and copy with `cp`.
 4. Unplug the watch. The app appears in the widget / glance loop (scroll up or down from the watch
