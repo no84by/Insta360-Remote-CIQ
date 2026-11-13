@@ -27,6 +27,15 @@ class RemoteDelegate extends Ui.BehaviorDelegate {
 	hidden var tapTimer;
 	hidden var startKeyAt = null;   // time of the last START key press (onKeyPressed), null = none pending
 	hidden var tapPending = false;
+	// Accidental touches: a palm on the screen while pressing a button arrives as a tap. Taps are
+	// ignored for KEY_TAP_GUARD_MS after any button press, and a tap on empty space does not START
+	// within START_TAP_GUARD_MS of the last START action.
+	const KEY_TAP_GUARD_MS = 1000;
+	const START_TAP_GUARD_MS = 2000;
+	var keyAt = null;        // time of the last button press of any kind
+	var startAt = null;      // time of the last START action
+	var pageKey = null;      // KEY_UP / KEY_DOWN of the last press, for highlight / Track That
+	var pageKeyAt = null;
 
 	function initialize(device) {
 		BehaviorDelegate.initialize();
@@ -55,12 +64,25 @@ class RemoteDelegate extends Ui.BehaviorDelegate {
 	}
 
 	function onTapTimeout() as Void {
-		if (tapPending) { tapPending = false; inLog("fallback START (no tap followed)"); runStart(); }
+		if (!tapPending) { return; }
+		tapPending = false;
+		var why = tapBlocked(Sys.getTimer(), true);
+		if (why != null) { inLog("fallback START ignored: " + why); return; }
+		inLog("fallback START (no tap followed)");
+		runStart();
+	}
+
+	// Why a tap must be ignored now (null = allowed). start: the tap would run START.
+	function tapBlocked(now, start) {
+		if (keyAt != null && now - keyAt < KEY_TAP_GUARD_MS) { return "button just pressed"; }
+		if (start && startAt != null && now - startAt < START_TAP_GUARD_MS) { return "START just ran"; }
+		return null;
 	}
 
 	// START button (or a tap outside the rows): one press = one action, no menus.
 	function runStart() {
 		var s = uiState(dev);
+		startAt = Sys.getTimer();
 		inLog("START state=" + s + " mode=" + BLEBarrel.currentMode + " focus=" + Settings.focus);
 		if (s == UI_SEARCHING) {
 			return true;
@@ -128,7 +150,12 @@ class RemoteDelegate extends Ui.BehaviorDelegate {
 	function onTap(evt) {
 		tapPending = false;
 		tapTimer.stop();
+		var now = Sys.getTimer();
+		var why = tapBlocked(now, false);
+		if (why != null) { inLog("tap ignored: " + why); return true; }
 		if (focusRowAt(evt)) { return true; }
+		why = tapBlocked(now, true);
+		if (why != null) { inLog("tap START ignored: " + why); return true; }
 		return runStart();
 	}
 
@@ -160,7 +187,10 @@ class RemoteDelegate extends Ui.BehaviorDelegate {
 		var kmsg = "[key] pressed " + evt.getKey() + (evt.getKey() == Ui.KEY_LIGHT ? " (LIGHT)" : "");
 		Sys.println(kmsg);
 		BLEBarrel.logLine(kmsg);
-		if (evt.getKey() == Ui.KEY_ENTER) { startKeyAt = Sys.getTimer(); }
+		var now = Sys.getTimer();
+		keyAt = now;
+		if (evt.getKey() == Ui.KEY_ENTER) { startKeyAt = now; }
+		if (evt.getKey() == Ui.KEY_UP || evt.getKey() == Ui.KEY_DOWN) { pageKey = evt.getKey(); pageKeyAt = now; }
 		return false;
 	}
 
@@ -206,10 +236,21 @@ class RemoteDelegate extends Ui.BehaviorDelegate {
 		Ui.requestUpdate();
 	}
 
-	// UP: highlight while recording, otherwise previous mode (-)
+	// A page behaviour from the button itself (pressed just before), not a swipe.
+	hidden function fromKey(k) {
+		var key = pageKey == k && pageKeyAt != null && Sys.getTimer() - pageKeyAt < 2000;
+		pageKey = null;
+		return key;
+	}
+
+	// UP: highlight while recording (button only: a swipe must not mark the file), otherwise
+	// previous mode (-)
 	function onPreviousPage() {
 		var s = uiState(dev);
+		var key = fromKey(Ui.KEY_UP);
+		inLog("page prev key=" + key);
 		if (s == UI_RECORDING) {
+			if (!key) { return true; }
 			dev.sendCMD(BLEBarrel.cmdHighlight);
 			buzz(40);
 			toast("Highlight added");
@@ -219,10 +260,13 @@ class RemoteDelegate extends Ui.BehaviorDelegate {
 		return false;
 	}
 
-	// DOWN: Track That while recording, otherwise next mode (+)
+	// DOWN: Track That while recording (button only), otherwise next mode (+)
 	function onNextPage() {
 		var s = uiState(dev);
+		var key = fromKey(Ui.KEY_DOWN);
+		inLog("page next key=" + key);
 		if (s == UI_RECORDING) {
+			if (!key) { return true; }
 			dev.sendCMD(BLEBarrel.cmdTrackThat);
 			buzz(40);
 			toast("Track That");

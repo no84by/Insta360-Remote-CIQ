@@ -62,3 +62,54 @@ function titleTapAreaCoversAllLines(logger) {
 	logger.debug("top=" + top + " bottom=" + bottom + " row1=" + row1 + " miss=" + miss + " left=" + left);
 	return top == 0 && bottom == 0 && row1 == 1 && miss == -1 && left == -1;
 }
+
+// A BLE device that only records what would be sent.
+class SendLogBle extends BLEBarrel.BleDevice {
+	var sent = [];
+	function initialize() { BleDevice.initialize(); }
+	function sendCMD(value) { sent.add(value); }
+}
+
+// Real Mk3i log: BACK (`[key] pressed 5`) and right after it a tap on empty space started a
+// recording (palm on the screen). Taps within 1 s of a button press are ignored; a tap on empty
+// space does not START within 2 s of the last START; later taps work again.
+(:test)
+function tapAfterKeyIgnored(logger) {
+	var d = new RemoteDelegate(new BLEBarrel.BleDevice());
+	var now = Toybox.System.getTimer();
+	d.onKeyPressed(new Ui.KeyEvent(Ui.KEY_ESC, Ui.PRESS_TYPE_ACTION));
+	var afterKey = d.tapBlocked(now, false) != null && d.tapBlocked(now, true) != null;
+	var later = d.tapBlocked(now + 1500, false) == null && d.tapBlocked(now + 1500, true) == null;
+	d.keyAt = null; d.startAt = now;
+	var afterStart = d.tapBlocked(now + 500, false) == null && d.tapBlocked(now + 500, true) != null;
+	var afterStartLater = d.tapBlocked(now + 2500, true) == null;
+	logger.debug("afterKey=" + afterKey + " later=" + later + " afterStart=" + afterStart + " afterStartLater=" + afterStartLater);
+	return afterKey && later && afterStart && afterStartLater;
+}
+
+// Real Mk3i log: four highlight frames during one recording with no UP / DOWN press (swipes).
+// While recording only the buttons add a highlight / Track That.
+(:test)
+function swipeDoesNotHighlight(logger) {
+	var ble = new SendLogBle();
+	resetTestState(ble);
+	ble.device = {}; ble.linkReady = true; ble.scanning = false;
+	BLEBarrel.recState = BLEBarrel.stateStartRec;
+	var demo = $.demoState;
+	$.demoState = null;   // the test build carries the demo sources: use the real UI state
+	var d = new RemoteDelegate(ble);
+	var r1 = d.onPreviousPage();   // swipe down
+	var r2 = d.onNextPage();       // swipe up
+	var swipes = ble.sent.size();
+	d.onKeyPressed(new Ui.KeyEvent(Ui.KEY_UP, Ui.PRESS_TYPE_ACTION));
+	d.onPreviousPage();
+	d.onKeyPressed(new Ui.KeyEvent(Ui.KEY_DOWN, Ui.PRESS_TYPE_ACTION));
+	d.onNextPage();
+	var n = ble.sent.size();
+	logger.debug("swipes sent " + swipes + ", keys sent " + n);
+	var ok = r1 && r2 && swipes == 0 && n == 2 && ble.sent[0][7] == 0x3c && ble.sent[1][7] == 0x3c
+		&& ble.sent[0][17] == 0xde && ble.sent[1][17] == 0xf8;
+	$.demoState = demo;
+	resetTestState(ble);
+	return ok;
+}
