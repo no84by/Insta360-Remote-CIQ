@@ -274,3 +274,25 @@ function settingPushEchoAndWhole(logger) {
 	Settings.vals = {}; Settings.acked = {};
 	return ok;
 }
+
+// App started while the camera records (real cut 0x0F reply, Starlapse running): the camera's
+// elapsed time does not fit in 20 bytes, so the timer counts from the join and shows "+".
+// A recording the watch itself started shows a plain timer.
+(:test)
+function adoptedRecordingTimerMarked(logger) {
+	var d = new BLEBarrel.BleDevice();
+	BLEBarrel.deviceName = "X5 1ABCDE";
+	BLEBarrel.currentMode = "v0"; BLEBarrel.currentLabel = "Video"; BLEBarrel.videoMode = true;
+	BLEBarrel.recState = BLEBarrel.stateStopRec;
+	d.capSeq = 0x41; d.syncOnConnect = true;
+	d.reassembleX5([0x18, 0, 0, 0, 0x04, 0, 0, 0xc8, 0x00, 0x02, 0x41, 0, 0, 0x80, 0, 0, 0x0a, 0x06, 0x08, 0x13]b);
+	var adopted = BLEBarrel.timerText();
+	// stop, then the watch starts a recording: confirmed by the 0x0F reply (state 1)
+	BLEBarrel.recState = BLEBarrel.stateStarting; BLEBarrel.photoSeq = -1;
+	d.capSeq = 0x42;
+	d.reassembleX5([0x18, 0, 0, 0, 0x04, 0, 0, 0xc8, 0x00, 0x02, 0x42, 0, 0, 0x80, 0, 0, 0x0a, 0x06, 0x08, 0x01]b);
+	var own = BLEBarrel.timerText();
+	logger.debug("adopted=" + adopted + " own=" + own);
+	BLEBarrel.recState = BLEBarrel.stateStopRec;
+	return adopted.equals("+00:00") && own.equals("00:00") && !BLEBarrel.recAdopted;
+}

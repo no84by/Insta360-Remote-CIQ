@@ -306,7 +306,7 @@ class RemoteView extends WatchUi.View {
 				break;
 			case UI_RECORDING:
 				heroColor = C_RED; titleColor = C_RED;
-				title = elapsed(); timer = true;
+				title = BLEBarrel.timerText(); timer = true;
 				info.add(["", BLEBarrel.currentLabel, C_DIM]);
 				startCue = C_TEXT;
 				break;
@@ -889,16 +889,6 @@ class RemoteView extends WatchUi.View {
 		dc.drawText(cx, cy + rr * 0.78, Gfx.FONT_XTINY, "GPS", Gfx.TEXT_JUSTIFY_CENTER | Gfx.TEXT_JUSTIFY_VCENTER);
 	}
 
-	hidden function elapsed() {
-		var secs = Time.now().subtract(BLEBarrel.startRecTime).value();
-		var hh = secs / 3600;
-		var mm = (secs % 3600) / 60;
-		var ss = secs % 60;
-		if (hh > 0) {
-			return hh + ":" + mm.format("%02d") + ":" + ss.format("%02d");
-		}
-		return mm.format("%02d") + ":" + ss.format("%02d");
-	}
 }
 
 (:glance :noDemo)

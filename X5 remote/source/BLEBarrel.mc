@@ -37,6 +37,26 @@ const SeqPos = 10;
 
 var recState = stateStopRec;
 var startRecTime = Time.now(); 
+// True when the watch joined a capture already running (connect sync). No reply or push that fits
+// in a 20-byte notification carries the camera's elapsed time (docs/watch-app.md), so the timer
+// then shows the time since the watch joined, marked with a leading "+".
+var recAdopted = false;
+
+function recStarted(adopted) {
+	recState = stateStartRec;
+	startRecTime = Time.now();
+	recAdopted = adopted;
+}
+
+// Recording timer text: m:ss / h:mm:ss since startRecTime, "+" first for an adopted capture.
+function timerText() {
+	var secs = Time.now().subtract(startRecTime).value();
+	var hh = secs / 3600;
+	var mm = (secs % 3600) / 60;
+	var ss = secs % 60;
+	var t = (hh > 0) ? hh + ":" + mm.format("%02d") + ":" + ss.format("%02d") : mm.format("%02d") + ":" + ss.format("%02d");
+	return recAdopted ? "+" + t : t;
+}
 var elapsedRecTime;
 var clockTime;
 var lastTime = Time.now();
@@ -613,10 +633,10 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 				syncOnConnect = false;
 				var id = (st > 0) ? modeForCaptureState(st) : null;
 				if (id != null) {
-					// camera is already capturing: follow it
+					// camera is already capturing: follow it. Its elapsed time is not readable on a
+					// watch (see recAdopted), so the timer counts from now and is marked.
 					adoptMode(id);
-					recState = stateStartRec;
-					startRecTime = Time.now();
+					recStarted(true);
 				} else {
 					// camera idle: make it match the mode the watch shows
 					ensureX5Mode();
@@ -625,8 +645,7 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 				return;
 			}
 			if (st > 0 && recState == stateStarting && photoSeq < 0) {
-				recState = stateStartRec;
-				startRecTime = Time.now();
+				recStarted(false);
 				lapseSeq = -1;
 			} else if (st == 0 && recState == stateStopping) {
 				recState = stateStopRec;
@@ -642,8 +661,7 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 			if (st < 0 && body.size() == 0) { st = 0; }   // empty body = field 1 is 0 (idle)
 			debug("[cap] push state=" + st + " rec=" + recState);
 			if (st > 0 && recState == stateStarting && photoSeq < 0) {
-				recState = stateStartRec;
-				startRecTime = Time.now();
+				recStarted(false);
 				lapseSeq = -1;
 			} else if (st == 0 && recState == stateStopping && photoSeq < 0) {
 				recState = stateStopRec;
@@ -805,8 +823,7 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 			debug("[lapse] response code " + lcode);
 			lapseSeq = -1;
 			if (lcode == 200 && recState == stateStarting) {
-				recState = stateStartRec;
-				startRecTime = Time.now();
+				recStarted(false);
 			} else if (lcode == 200) {
 				recState = stateStopRec;
 			} else {
@@ -831,8 +848,7 @@ class BleDevice extends BluetoothLowEnergy.BleDelegate {
 			if (!isX5() and (value[7] == 0x10) and (value[17] > 0x00) and videoMode) {
 				// debug("Start Shooting");
 				mMessage = "Shooting";
-				recState = stateStartRec;
-				startRecTime = Time.now();
+				recStarted(false);
 //				WatchUi.pushView(new ViewData(BleDevice2), new InputDelegate(BleDevice2), WatchUi.SLIDE_IMMEDIATE);
 				
 			} else 	if (!isX5() and (value[7] == 0x10) and (value[17] == 0x00) and photoSeq < 0 and lapseSeq < 0) {
