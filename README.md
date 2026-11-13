@@ -1,26 +1,104 @@
-# Insta360-Remote-CIQ
-Garmin Connect IQ Remote for Insta360 Cameras
+# Insta360 X5 Remote for Garmin watches
 
-**Insta360 X5:** see [`X5 remote/`](X5%20remote/) — a widget for the X5 (new protocol, per-mode settings, new UI), with the X5 protocol notes in [`X5 remote/docs/`](X5%20remote/docs/).
+A Connect IQ widget that remote-controls the **Insta360 X5** from a **Garmin Descent Mk3i 51 mm**:
+start and stop recordings, take photos, switch modes and change shooting settings from the wrist.
 
-This is a very early, in progress, under development widget to Remote Control via Bluetooth the Insta360 One R Modular camera. Don't expect this widget to work ;) 
+**[Download the latest release](https://github.com/no84by/Insta360-Remote-CIQ/releases/tag/x5-remote-v1.1.4)**
+· [Full documentation](X5%20remote/README.md) · [X5 Bluetooth protocol notes](X5%20remote/docs/x5-protocol.md)
 
-The 'BLE Barrel' directory contrains a Garmin CIQ Barrel (library) with the main code for interacting with the camera.
+<img src="X5%20remote/docs/screenshots/overview.png" width="820" alt="Overview: Video, Photo Burst, Photo Interval, Timelapse, Settings page, recording, searching, camera not found">
 
-the 'OneR Remote' & 'OneR remote DF' contains the actual code (mainly UI) for the widget and datafield 
+## Why this fork
 
-The widget will scan for and automatically connect to your camera: Press the menu button to select the shooting mode (or to switch GPS telemetry on & off) and press the start button to start and stop the shooting. While shooting, when pressing stop, a menu will be displayed where you can select Stop (for actually stopping the recording), Highlight (will leave a mark in the video file, that you will find in the App) and Track that (will start a Deep Track in the app. you need to hold the selfie stick straight at the person you want to track).
+The official Insta360 Connect IQ app crashes at "Searching for device" on a Descent Mk3i with an X5,
+and the original community widget in this repository predates the X5's newer protocol. This fork adds
+an X5 widget, built on the original widget's Bluetooth code, tested on the real watch and camera.
 
-Any widget is accessible from a standard Garmin activity (press 3 seconds on the back / lap button on Fenix). So you can still start your favorite activity and then access the widget. If you have disabled GPS Telemetry, it will be disabled in your activity also.
+It is not in the Connect IQ store: you install it yourself with the installer below. No Garmin account
+is needed.
 
-The widget was developed and tested with the 360 mod. Using this widget with other mod will yield unexpected results. It should also be compatible with the One RS, One X, One X2, X3 but not with the GO, GO2, GO3, Ace & Ace pro.
+## Install
 
-If you have enabled GPS Telemetry, you can overlay GPS data on your video through the use of the official One R app on Android or IOS or on PC/Max with the Studio application.
+1. Download `x5-remote-installer.zip` from the [latest release](https://github.com/no84by/Insta360-Remote-CIQ/releases/tag/x5-remote-v1.1.4) and unzip it.
+2. Double-click the file for your computer: `Install on Windows.bat`, `Install on Mac.command` or
+   `Install on Linux.sh`. (Windows or macOS may warn about an unsigned file: `READ ME FIRST.txt` says
+   how to allow it.)
+3. When asked, plug the watch in with its USB cable and wait. It can take a minute or more before the
+   watch is ready; if nothing happens, unplug it and plug it in again.
+4. When the window says "Done", unplug the watch. The widget is in the widget loop: scroll up or down
+   from the watch face.
 
-User of touch screen devices can just tap on the screen to start & stop shooting.
+The installer downloads the newest release, checks it against the release's `SHA256SUMS` and copies it
+to `GARMIN/Apps`, replacing an older copy. To install by hand instead, copy the `.prg` from the release
+into `GARMIN/Apps` over USB ([details](X5%20remote/README.md)).
 
-All Garmin's devices with BLE (Bluetooth Low Energy) and CIQ V3.1 or later are supported. Older watches (Fenix 3/5, Descent MK1, Vivoactive, etc) cannot be supported due do lack of hardware compatibility to communicate with the camera. 
+Tested on a Descent Mk3i 51 mm with macOS, Windows 11 and Linux (libmtp); the Linux desktop (GVfs)
+path is untested on hardware. On other Garmin watches it installs, but it is untested there and used at
+your own risk.
 
-Widget avaialbe at https://apps.garmin.com/apps/bb53f4bb-6c8c-4369-bca9-84cc09b25526
+**Before the first use:** close the Insta360 phone app (the X5 accepts one Bluetooth client at a time),
+wake the camera, open the widget, and tap **Allow** on the camera's screen when it asks.
 
-Datafield for touch based Garmin Edge Devices avaialble at https://apps.garmin.com/apps/f0cdaa9c-5733-4748-ba66-1c7a3b008922
+## What it does
+
+- **All 13 X5 modes**, switched from the watch, and the watch follows mode changes made on the camera.
+- **Capture:** video, PureVideo, photo, burst, interval, starlapse, timelapse. Recordings started or
+  stopped on the camera are followed live, with an exact timer.
+- **Per-mode settings** from the watch: resolution / frame rate, EV, lens (360° / front), self-timer,
+  photo size, interval, burst, timelapse speed, loop length, starlapse duration.
+- **Settings page** (last mode dot): camera sound on / off, power off the camera, exit.
+- **Status:** charging / on battery, low battery, SD card state (no card / full / error).
+- **Robust link:** reconnects after the camera's standby or a dropped link, recovers a stuck Bluetooth
+  write queue, and keeps the recording timer across reconnects.
+
+## How to use it
+
+The screen has two columns: the mode icon on the left; on the right the mode name (the **title**) and
+the settings of that mode (**rows**). One entry is **focused** at a time (amber pill).
+
+| Button | Ready | Recording |
+|---|---|---|
+| START | Shoot: start video, take the photo, start interval / burst / timelapse | Stop |
+| UP / DOWN | Change the focused entry: title = previous / next mode, row = previous / next value | Highlight / *Track That* |
+| BACK | Move the focus: title → row 1 → row 2 → … → title | — |
+| Hold UP | Mode list, **Exit app** | — |
+
+| Touch | Does |
+|---|---|
+| Tap the title or a row | Focus it |
+| Swipe up / down | Same as UP / DOWN on the focused entry (ignored while recording) |
+| Tap anywhere else | Same as START |
+
+Changes are sent to the camera about 0.8 s after the last press, so you can scroll quickly. A second
+START press while the camera is still confirming a start or stop is ignored. Taps right after a button
+press are ignored, so a palm on the screen does not start a recording.
+
+## Limits (Connect IQ, not the camera)
+
+Connect IQ delivers at most 20 bytes per Bluetooth notification, and the X5 never continues a cut
+reply. So the watch cannot read:
+
+- the battery **percentage** or free card **space** (it shows charging / battery and the card state);
+- the current value of a setting changed on the camera's own screen (that row shows `–` until you set
+  it from the watch);
+- the elapsed time of a recording that was already running before the watch connected (it shows
+  **REC** and "joined" instead of a timer).
+
+Also: the watch cannot power the camera **on** (Connect IQ apps cannot send the wake advertisement);
+power off works.
+
+Details: [X5 protocol notes](X5%20remote/docs/x5-protocol.md) and
+[how the app uses them](X5%20remote/docs/watch-app.md).
+
+## Credits and license
+
+Built on [ArsFabula's Insta360 Remote](https://github.com/arsfabula/Insta360-Remote-CIQ) (Bluetooth
+code and the original widget for older Insta360 cameras). Mozilla Public License 2.0, the license of
+the original project; provided "as is", without warranty.
+
+## The original project (older cameras)
+
+The rest of this repository is the original widget and data field for the Insta360 One R / RS / X /
+X2 / X3 and related cameras: `BLE Barrel/`, `OneR Remote/` and `OneR remote DF/`. It is available in the
+Connect IQ store as [Insta360 Remote](https://apps.garmin.com/apps/bb53f4bb-6c8c-4369-bca9-84cc09b25526);
+see the [original repository](https://github.com/arsfabula/Insta360-Remote-CIQ) for its documentation.
