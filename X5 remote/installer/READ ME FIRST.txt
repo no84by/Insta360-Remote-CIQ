@@ -19,7 +19,9 @@ WHAT IT DOES
   1. Downloads the newest X5 Remote release for the Descent Mk3i 51 mm from GitHub and checks it
      against the release's SHA256SUMS. Offline: put the .prg (and SHA256SUMS) from the release
      next to these files; the installer then uses that file.
-  2. Copies it to the watch's GARMIN/Apps folder as INSTAREM.PRG, replacing an older copy, and
+  2. Reads the watch model (GARMIN/GarminDevice.xml). The app is built and tested for the
+     Descent Mk3i 51 mm; on another Garmin watch the installer says so once and continues.
+  3. Copies it to the watch's GARMIN/Apps folder as INSTAREM.PRG, replacing an older copy, and
      checks the copy. To remove the app later, delete that file from GARMIN/Apps.
 
 NEEDS
@@ -44,3 +46,4 @@ WITHOUT THE LAUNCHERS
   python3 install.py                 (Windows: py -3 install.py)
   python3 install.py --prg FILE      install this .prg file
   python3 install.py --check         only download and check, do not touch the watch
+  python3 install.py --pre           also consider pre-releases (stable releases otherwise)

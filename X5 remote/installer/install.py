@@ -13,7 +13,8 @@ Nothing is installed on this computer. On macOS the copy needs libmtp (Homebrew)
 GitHub.
 
 Options: --prg FILE (install this file), --wait SECONDS (how long to wait for the watch, default
-300), --check (only download and verify, do not touch the watch).
+300), --check (only download and verify, do not touch the watch), --pre (also consider
+pre-releases).
 """
 
 from __future__ import annotations
@@ -77,16 +78,16 @@ def prg_version(name: str) -> tuple:
     return parse_version(name, PRG_RE)
 
 
-def pick_release(releases: list) -> tuple[str, dict, dict] | None:
+def pick_release(releases: list, pre: bool = False) -> tuple[str, dict, dict] | None:
     """Newest x5-remote-v* release that has the watch's .prg and a SHA256SUMS file.
 
-    The repository also carries upstream releases with other tags; drafts are skipped, and the
-    order of the list does not matter (pre-releases count, /releases/latest is not used).
+    The repository also carries upstream releases with other tags; drafts are skipped, the order
+    of the list does not matter, and pre-releases are taken only with pre=True (--pre).
     """
     best = None
     for rel in releases:
         key = version_key(rel.get("tag_name", ""))
-        if not key or rel.get("draft"):
+        if not key or rel.get("draft") or (rel.get("prerelease") and not pre):
             continue
         assets = rel.get("assets") or []
         prg = next((a for a in assets if prg_version(a.get("name", ""))), None)
@@ -130,10 +131,10 @@ def _fetch(url: str, timeout: int = 30) -> bytes:
         return r.stdout
 
 
-def download_latest(dest: Path) -> Path:
+def download_latest(dest: Path, pre: bool = False) -> Path:
     say("Looking for the newest X5 Remote release on GitHub...")
     try:
-        pick = pick_release(json.loads(_fetch(f"https://api.github.com/repos/{REPO}/releases?per_page=50")))
+        pick = pick_release(json.loads(_fetch(f"https://api.github.com/repos/{REPO}/releases?per_page=50")), pre)
         if not pick:
             raise InstallError("No X5 Remote release with a file for the Descent Mk3i 51 mm was found.")
         tag, prg, sums = pick
@@ -176,6 +177,41 @@ def parse_wait(text: str) -> int:
     if v <= 0:
         raise InstallError(f"--wait needs a number of seconds, for example --wait 300 (got {text!r}).")
     return v
+
+
+# --- the watch's model ------------------------------------------------------------------------
+
+MK3I_51_PART = "006-B4223"       # part number of the Descent Mk3i 51 mm (Connect IQ device data)
+OTHER_WATCH = ("Built and tested for the Descent Mk3i 51 mm; on other watches it is untested and used "
+               "at your own risk.")
+
+
+def parse_model(data: bytes) -> tuple | None:
+    """(part number, description) from GARMIN/GarminDevice.xml, or None when unreadable."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(data)
+    except (ET.ParseError, TypeError, ValueError):
+        return None
+    local = lambda el: el.tag.rsplit("}", 1)[-1]
+    for el in root.iter():
+        if local(el) == "Model":
+            vals = {local(c): (c.text or "").strip() for c in el}
+            if vals.get("PartNumber") or vals.get("Description"):
+                return vals.get("PartNumber", ""), vals.get("Description", "")
+    return None
+
+
+def is_mk3i_51(part: str, desc: str) -> bool:
+    return (part or "").upper().startswith(MK3I_51_PART) or \
+        bool(re.search(r"descent\W*mk\s*3i\b.*\b51\s*mm", desc or "", re.I))
+
+
+def note_model(data: bytes | None) -> None:
+    """One neutral line when GarminDevice.xml names another watch; nothing is blocked or asked."""
+    m = parse_model(data) if data else None
+    if m and not is_mk3i_51(*m):
+        say(f"  Watch: {m[1] or m[0]}. " + OTHER_WATCH)
 
 
 # --- the watch's folders -----------------------------------------------------------------------
@@ -244,7 +280,7 @@ def ps_quote(s: str) -> str:
 PS_FIND = r"""
 $sh = New-Object -ComObject Shell.Application
 function Child($f, $n) { foreach ($i in @($f.Items())) { if ($i.IsFolder -and $i.Name -ieq $n) { return $i.GetFolder } }; return $null }
-function FindApps {
+function FindGarmin {
   foreach ($dev in @($sh.NameSpace(17).Items())) {
     if ($dev.IsFileSystem) { continue }
     $df = $null; try { $df = $dev.GetFolder } catch {}
@@ -253,11 +289,12 @@ function FindApps {
       $sf = $null; try { $sf = $st.GetFolder } catch {}
       if ($sf -eq $null) { continue }
       $g = Child $sf 'GARMIN'; if ($g -eq $null) { continue }
-      $a = Child $g 'Apps'; if ($a -ne $null) { return $a }
+      if ((Child $g 'Apps') -ne $null) { return $g }
     }
   }
   return $null
 }
+function FindApps { $g = FindGarmin; if ($g -eq $null) { return $null }; return Child $g 'Apps' }
 # The Shell may hide the extension of a name: test the name with and without .prg.
 function Is($n, $re) { return ($n -imatch $re) -or (($n + '.prg') -imatch $re) }
 """
@@ -265,6 +302,35 @@ function Is($n, $re) { return ($n -imatch $re) -or (($n + '.prg') -imatch $re) }
 
 def windows_probe_script() -> str:
     return PS_FIND + "if ((FindApps) -ne $null) { Write-Output 'FOUND'; exit 0 } else { exit 2 }\n"
+
+
+def windows_model_script(dest: str) -> str:
+    """PowerShell: copy GARMIN/GarminDevice.xml into the folder dest (best effort, 30 s)."""
+    return PS_FIND + f"""
+$dest = {ps_quote(dest)}
+$g = FindGarmin; if ($g -eq $null) {{ exit 2 }}
+$x = @($g.Items()) | Where-Object {{ -not $_.IsFolder -and $_.Name -imatch '^GarminDevice(\\.xml)?$' }} | Select-Object -First 1
+if ($x -eq $null) {{ exit 2 }}
+$sh.NameSpace($dest).CopyHere($x, 4 + 16 + 1024)
+for ($i = 0; $i -lt 30; $i++) {{
+  $f = Join-Path $dest 'GarminDevice.xml'
+  if ((Test-Path $f) -and (Get-Item $f).Length -gt 0) {{ Start-Sleep -Seconds 1; exit 0 }}
+  Start-Sleep -Seconds 1
+}}
+exit 3
+"""
+
+
+def windows_model() -> bytes | None:
+    d = tempfile.mkdtemp(prefix="x5-remote-model-")
+    try:
+        if run_ps(windows_model_script(d))[0] != 0:
+            return None
+        return (Path(d) / "GarminDevice.xml").read_bytes()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def windows_script(src: str, size: int) -> str:
@@ -333,6 +399,7 @@ def copy_windows(prg: Path, wait_s: int) -> None:
     wait_for(lambda: run_ps(windows_probe_script())[0] == 0, wait_s,
              f"Close Garmin Express if it is open. {UNPLUG_HINT}")
     say("  Watch found.")
+    note_model(windows_model())
     stage = Path(tempfile.mkdtemp(prefix="x5-remote-"))
     try:
         src = stage / TARGET                      # the Shell copies under the source file's name
@@ -386,11 +453,22 @@ def gio_apps() -> str | None:
     return None
 
 
+def gio_model(apps: str) -> bytes | None:
+    """GARMIN/GarminDevice.xml next to the Apps folder, or None."""
+    garmin = apps.rstrip("/").rsplit("/", 1)[0] + "/"
+    xml = uri_child(_gio_uris(garmin), "GarminDevice.xml")
+    if not xml:
+        return None
+    r = subprocess.run(["gio", "cat", xml.rstrip("/")], capture_output=True, timeout=60)
+    return r.stdout if r.returncode == 0 else None
+
+
 def gio_has_mtp() -> bool:
     return bool(shutil.which("gio")) and bool(gio_roots(_gio("mount", "-li").stdout))
 
 
 def copy_gio(apps: str, prg: Path) -> None:
+    note_model(gio_model(apps))
     for u in _gio_uris(apps):
         name = urllib.parse.unquote(u.rstrip("/").rsplit("/", 1)[-1])
         if stale_names([name]):
@@ -477,6 +555,7 @@ class Mtp:
         lib.LIBMTP_Send_File_From_File.argtypes = [C.POINTER(Device), C.c_char_p, C.POINTER(File), C.c_void_p, C.c_void_p]
         lib.LIBMTP_Release_Device.argtypes = [C.POINTER(Device)]
         lib.LIBMTP_FreeMemory.argtypes = [C.c_void_p]
+        lib.LIBMTP_Get_File_To_File.argtypes = [C.POINTER(Device), C.c_uint32, C.c_char_p, C.c_void_p, C.c_void_p]
         lib.LIBMTP_Init()
         self.open_fails = 0
 
@@ -521,6 +600,17 @@ class Mtp:
         return out
 
 
+def mtp_read(mtp: Mtp, dev, hits: list) -> bytes | None:
+    """Contents of the first listed file (GarminDevice.xml), or None."""
+    if not hits:
+        return None
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "GarminDevice.xml")
+        if mtp.lib.LIBMTP_Get_File_To_File(dev, hits[0][0], out.encode(), None, None) != 0 or not os.path.exists(out):
+            return None
+        return Path(out).read_bytes()
+
+
 def copy_libmtp(prg: Path, mtp: Mtp, dev) -> None:
     lib, C = mtp.lib, mtp.C
     try:
@@ -536,6 +626,7 @@ def copy_libmtp(prg: Path, mtp: Mtp, dev) -> None:
             st = st.contents.next
         if apps is None:
             raise InstallError("The watch has no GARMIN/Apps folder.")
+        note_model(mtp_read(mtp, dev, [e for e in found if not e[3] and e[2].lower() == "garmindevice.xml"]))
         for e in mtp.entries(dev, sid, apps):
             if not e[3] and stale_names([e[2]]):
                 say(f"  Removing the older copy {e[2]}")
@@ -655,7 +746,7 @@ def main(argv: list) -> int:
                 raise InstallError(f"{prg} does not exist.")
             check_local(prg)
         else:
-            prg = download_latest(tmp)
+            prg = download_latest(tmp, "--pre" in args)
         if "--check" in args:
             say("Checked; not copying (--check).")
             return 0

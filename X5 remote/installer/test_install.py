@@ -25,7 +25,8 @@ class ReleaseSelection(unittest.TestCase):
         rels = [
             release("x5-remote-v1.1.2", "insta360-x5-remote-1.1.2-descentmk351mm.prg", "SHA256SUMS"),
             release("v3.0.0", "upstream.prg", "SHA256SUMS"),                       # upstream tag
-            release("x5-remote-v1.1.10", "insta360-x5-remote-1.1.10-descentmk351mm.prg", "SHA256SUMS",
+            release("x5-remote-v1.1.10", "insta360-x5-remote-1.1.10-descentmk351mm.prg", "SHA256SUMS"),
+            release("x5-remote-v1.2.0", "insta360-x5-remote-1.2.0-descentmk351mm.prg", "SHA256SUMS",
                     prerelease=True),
             release("x5-remote-v1.1.4", "insta360-x5-remote-1.1.4-descentmk351mm.prg", "SHA256SUMS",
                     "x5-remote-installer.zip"),
@@ -34,6 +35,13 @@ class ReleaseSelection(unittest.TestCase):
         self.assertEqual(tag, "x5-remote-v1.1.10")
         self.assertEqual(prg["name"], "insta360-x5-remote-1.1.10-descentmk351mm.prg")
         self.assertEqual(sums["name"], "SHA256SUMS")
+        self.assertEqual(install.pick_release(rels, pre=True)[0], "x5-remote-v1.2.0")
+
+    def test_pre_release_only_with_pre(self):
+        rels = [release("x5-remote-v1.2.0", "insta360-x5-remote-1.2.0-descentmk351mm.prg", "SHA256SUMS",
+                        prerelease=True)]
+        self.assertIsNone(install.pick_release(rels))
+        self.assertEqual(install.pick_release(rels, pre=True)[0], "x5-remote-v1.2.0")
 
     def test_skips_drafts_and_releases_without_the_files(self):
         rels = [
@@ -96,6 +104,42 @@ class Checksums(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "other.prg").write_bytes(b"x")
             self.assertIsNone(install.local_prg(Path(d)))
+
+
+SAMPLE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
+<Device xmlns="http://www.garmin.com/xmlschemas/GarminDevice/v2">
+  <Model>
+    <PartNumber>006-B4223-00</PartNumber>
+    <SoftwareVersion>1625</SoftwareVersion>
+    <Description>Descent Mk3i - 51mm</Description>
+  </Model>
+  <Id>DEVICE-ID</Id>
+</Device>"""
+
+
+class WatchModel(unittest.TestCase):
+    def test_parse(self):
+        self.assertEqual(install.parse_model(SAMPLE_XML), ("006-B4223-00", "Descent Mk3i - 51mm"))
+        self.assertIsNone(install.parse_model(b"not xml"))
+        self.assertIsNone(install.parse_model(b"<Device><Id>1</Id></Device>"))
+
+    def test_target_by_part_or_description(self):
+        self.assertTrue(install.is_mk3i_51("006-B4223-00", ""))
+        self.assertTrue(install.is_mk3i_51("", "Descent\u2122 Mk3i 51mm"))
+        self.assertFalse(install.is_mk3i_51("006-B4222-00", "Descent Mk3i - 43mm"))
+        self.assertFalse(install.is_mk3i_51("006-B4000-00", "fenix 8 - 51mm"))
+
+    def test_other_watch_gets_one_line_and_is_not_blocked(self):
+        other = SAMPLE_XML.replace(b"006-B4223-00", b"006-B1234-00").replace(b"Descent Mk3i - 51mm", b"Other Watch")
+        with mock.patch.object(install, "say") as say, mock.patch("builtins.input") as ask:
+            install.note_model(SAMPLE_XML)
+            install.note_model(None)
+            install.note_model(b"garbage")
+            self.assertEqual(say.call_count, 0)
+            install.note_model(other)
+            self.assertEqual(say.call_count, 1)
+            self.assertIn("untested and used at your own risk", say.call_args[0][0])
+            ask.assert_not_called()
 
 
 class Errors(unittest.TestCase):
@@ -278,7 +322,7 @@ class LibmtpCopy(unittest.TestCase):
         storage.contents.next = None
         dev = mock.Mock()
         dev.contents.storage = storage
-        listings = {R: [(2, R, "GARMIN", True, 0)], 2: [(4, 2, "Apps", True, 0)],
+        listings = {R: [(2, R, "GARMIN", True, 0)], 2: [(4, 2, "Apps", True, 0), (5, 2, "GarminDevice.xml", False, 9)],
                     4: [(7, 4, "INSTAREM.PRG", False, 50)]}
         state = {"sent": False}
 
@@ -290,8 +334,12 @@ class LibmtpCopy(unittest.TestCase):
         def send(*a):
             state["sent"] = True
             return 0
+        def read(_dev, item, path, *_):
+            Path(path.decode()).write_bytes(SAMPLE_XML if item == 5 else b"")
+            return 0
         mtp.entries.side_effect = entries
         lib.LIBMTP_Send_File_From_File.side_effect = send
+        lib.LIBMTP_Get_File_To_File.side_effect = read
         return mtp, dev
 
     def prg(self, d, size):
@@ -313,6 +361,7 @@ class LibmtpCopy(unittest.TestCase):
             mtp, dev = self.fake(after=[(8, 4, "INSTAREM.PRG", False, 100)])
             install.copy_libmtp(self.prg(d, 100), mtp, dev)
             mtp.lib.LIBMTP_Delete_Object.assert_called_once_with(dev, 7)
+            self.assertEqual(mtp.lib.LIBMTP_Get_File_To_File.call_args[0][1], 5)   # model read
             mtp, dev = self.fake(after=[(8, 4, "INSTAREM.PRG", False, 100), (9, 4, "instarem.prg", False, 100)])
             with self.assertRaises(install.InstallError):
                 install.copy_libmtp(self.prg(d, 100), mtp, dev)
