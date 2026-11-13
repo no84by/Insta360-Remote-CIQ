@@ -3,7 +3,7 @@
 A Connect IQ widget that remote-controls the **Insta360 X5** from a **Garmin Descent Mk3i 51 mm**:
 start and stop recordings, take photos, switch modes and change shooting settings from the wrist.
 
-**[Download the latest release](https://github.com/no84by/Insta360-Remote-CIQ/releases/tag/x5-remote-v1.1.4)**
+**[Download the latest release](https://github.com/no84by/Insta360-Remote-CIQ/releases/latest)**
 · [Full documentation](X5%20remote/README.md) · [X5 Bluetooth protocol notes](X5%20remote/docs/x5-protocol.md)
 
 <img src="X5%20remote/docs/screenshots/overview.png" width="820" alt="Overview: Video, Photo Burst, Photo Interval, Timelapse, Settings page, recording, searching, camera not found">
@@ -19,7 +19,7 @@ is needed.
 
 ## Install
 
-1. Download `x5-remote-installer.zip` from the [latest release](https://github.com/no84by/Insta360-Remote-CIQ/releases/tag/x5-remote-v1.1.4) and unzip it.
+1. Download `x5-remote-installer.zip` from the [latest release](https://github.com/no84by/Insta360-Remote-CIQ/releases/latest) and unzip it.
 2. Double-click the file for your computer: `Install on Windows.bat`, `Install on Mac.command` or
    `Install on Linux.sh`. (Windows or macOS may warn about an unsigned file: `READ ME FIRST.txt` says
    how to allow it.)
