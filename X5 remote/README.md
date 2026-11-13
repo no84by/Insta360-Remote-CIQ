@@ -47,8 +47,36 @@ most reusable part.
 
 ## Install without a Garmin account or the store
 
-There is no store release. A ready-built app file (`.prg`) for each supported watch is attached to
-the GitHub release, with a `SHA256SUMS` file to check the download.
+There is no store release.
+
+### Easiest: the installer
+
+Download `x5-remote-installer.zip` from the
+[latest X5 Remote release](https://github.com/no84by/Insta360-Remote-CIQ/releases), unzip it and
+double-click the file for your system:
+
+| System | Double-click |
+|---|---|
+| Windows | `Install on Windows.bat` |
+| macOS | `Install on Mac.command` (the first time: right-click > Open, since it is not signed) |
+| Linux | `Install on Linux.sh` (or run it in a terminal) |
+
+Plug the watch in when the window asks. The installer downloads the newest release for the Descent
+Mk3i 51 mm, checks it against the release's `SHA256SUMS`, waits for the watch, copies the app to
+`GARMIN/Apps` (replacing an older copy) and checks the copy. When it says *Done*, unplug the watch.
+After plugging in, the watch can take a minute or more before the computer sees it; if nothing
+happens, unplug and plug in again.
+
+It needs Python 3.8 or newer (the launcher offers the official python.org installer if it is
+missing). Windows needs nothing else. macOS needs the free `libmtp` (the installer offers
+`brew install libmtp` when Homebrew is there); quit Garmin Express first, it holds the watch.
+Linux uses GVfs (most desktops) or `libmtp`. Offline: put the `.prg` and `SHA256SUMS` from the
+release next to the installer files. Details: `READ ME FIRST.txt` in the zip.
+
+### By hand
+
+A ready-built app file (`.prg`) for each supported watch is attached to the GitHub release, with a
+`SHA256SUMS` file to check the download.
 
 1. Download `insta360-x5-remote-<version>-<device>.prg` for your watch from the release page.
    `descentmk351mm` is the Descent Mk3i 51 mm.
